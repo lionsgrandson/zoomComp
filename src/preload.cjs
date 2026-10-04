@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('zoomComp', {
   pause: (paused) => ipcRenderer.invoke('companion:pause', paused),
   setOutputSpeaking: (speaking) => ipcRenderer.invoke('companion:output-speaking', speaking),
   ask: (text) => ipcRenderer.invoke('companion:ask', text),
+  exportSession: (payload) => ipcRenderer.invoke('session:export', payload),
   sendAudio: (arrayBuffer) => ipcRenderer.send('companion:audio', arrayBuffer),
   endAudioStream: () => ipcRenderer.send('companion:audio-end'),
   setAlwaysOnTop: (enabled) => ipcRenderer.invoke('window:always-on-top', enabled),

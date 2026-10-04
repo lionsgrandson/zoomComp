@@ -6,7 +6,7 @@ Windows-first desktop meeting copilot powered by Gemini Live. It listens to your
 
 - Captures microphone + Windows system audio, so it can work with Zoom, Google Meet, Microsoft Teams, browser calls, and most other meeting software.
 - Streams 16 kHz PCM audio to `gemini-3.8-live`.
-- Uses Gemini Live proactive audio so the model can stay silent when nothing useful should be said.
+- Uses a strict coaching prompt so the model stays quiet unless an intervention is useful.
 - Uses Gemini Google Search grounding when current/external information is needed, such as a product or competitor mentioned in the call.
 - Shows input transcription and Gemini's spoken response transcript.
 - Plays Gemini's native audio response through your selected Windows output device/headphones.

@@ -27,7 +27,7 @@ TRANSCRIBE_CHUNK_SECONDS = 3.0
 TRANSCRIPT_WINDOW_CHARS = 2600
 TRANSCRIPT_WINDOW_SECONDS = 45
 ASK_WINDOW_CHARS = 9000
-AUTO_MAX_WORDS = 32
+AUTO_MAX_WORDS = 25
 SILENT_MARKER = "[SILENT]"
 HUMAN_OUTPUT = False
 
@@ -109,6 +109,7 @@ class CompanionService:
         self.paused_event = threading.Event()
         self.output_speaking_event = threading.Event()
         self.suppress_system_until = 0.0
+        self.last_user_activity_emit = 0.0
         self.audio_queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=12)
         self.transcript_lock = threading.Lock()
         self.transcript: deque[tuple[int, float, str, str]] = deque(maxlen=180)
@@ -243,6 +244,22 @@ class CompanionService:
                 parts = []
                 frames = 0
                 continue
+
+            if source == "YOU":
+                block_pcm = np.frombuffer(data, dtype=np.int16)
+                if block_pcm.size:
+                    block_level = float(
+                        np.sqrt(
+                            np.mean(
+                                np.square(block_pcm.astype(np.float32) / 32768.0),
+                                dtype=np.float64,
+                            )
+                        )
+                    )
+                    now = time.monotonic()
+                    if block_level >= 0.012 and now - self.last_user_activity_emit >= 0.6:
+                        self.last_user_activity_emit = now
+                        emit("user-speaking", {})
 
             if source == "MEETING" and (
                 self.output_speaking_event.is_set()

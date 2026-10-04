@@ -121,10 +121,17 @@ function processSpeechQueue() {
   speechSynthesis.speak(utterance);
 }
 
-function speakAdvice(text) {
+function limitSpeechWords(text, maxWords) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return words.join(' ');
+  return words.slice(0, maxWords).join(' ') + '…';
+}
+
+function speakAdvice(text, kind = 'automatic') {
   if (!ui.audioEnabled.checked || !text?.trim() || !('speechSynthesis' in window)) return;
 
-  const clean = text.trim();
+  const maxWords = kind === 'direct' ? 28 : 14;
+  const clean = limitSpeechWords(text.trim(), maxWords);
   const fingerprint = speechFingerprint(clean);
   const now = Date.now();
 
@@ -296,6 +303,17 @@ window.zoomComp.onEvent(({ type, payload }) => {
 
     case 'input-transcript':
       addTranscript(payload.text);
+      if (payload.source === 'YOU' && (speechActive || speechQueue.length)) {
+        clearSpeech();
+      }
+      break;
+
+    case 'user-speaking':
+      if (speechActive || speechQueue.length) clearSpeech();
+      break;
+
+    case 'stale-advice':
+      ui.provider.textContent = 'Provider: skipped stale advice';
       break;
 
     case 'output-transcript': {
@@ -303,7 +321,7 @@ window.zoomComp.onEvent(({ type, payload }) => {
       if (!text) break;
       ui.advice.textContent = text;
       if (payload.provider) ui.provider.textContent = `Provider: ${payload.provider}`;
-      speakAdvice(text);
+      speakAdvice(text, payload.kind || 'automatic');
       break;
     }
 

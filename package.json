@@ -1,6 +1,6 @@
 {
   "name": "zoom-companion",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Private local-transcription meeting copilot with Gemini and Ollama fallback.",
   "type": "module",
   "main": "src/main/main.js",

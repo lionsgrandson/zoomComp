@@ -39,7 +39,7 @@ def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
         if event_type == "input-transcript":
             print(payload.get("text", ""), flush=True)
         elif event_type == "output-transcript":
-            print("\\nCOACH: " + str(payload.get("text", "")) + "\\n", flush=True)
+            print("\nCOACH: " + str(payload.get("text", "")) + "\n", flush=True)
         elif event_type == "capture-info":
             print("AUDIO: " + str(payload.get("text", "")), flush=True)
         elif event_type == "status":

@@ -97,12 +97,17 @@ class CompanionService:
         self.ollama_url = str(config.get("ollamaUrl") or "http://127.0.0.1:11434").rstrip("/")
 
         self.stop_event = threading.Event()
+        self.paused_event = threading.Event()
+        self.output_speaking_event = threading.Event()
+        self.suppress_system_until = 0.0
         self.audio_queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=12)
         self.transcript_lock = threading.Lock()
         self.transcript: deque[tuple[int, float, str, str]] = deque(maxlen=180)
         self.next_sequence = 1
         self.last_analyzed_sequence = 0
         self.last_analysis_at = 0.0
+        self.last_advice_fingerprint = ""
+        self.last_advice_at = 0.0
         self.api_blocked_until = 0.0
         self.api_backoff_seconds = 0.0
 
@@ -225,6 +230,19 @@ class CompanionService:
                     emit("error", {"message": f"{source} audio capture error: {exc}"})
                 return
 
+            if self.paused_event.is_set():
+                parts = []
+                frames = 0
+                continue
+
+            if source == "MEETING" and (
+                self.output_speaking_event.is_set()
+                or time.monotonic() < self.suppress_system_until
+            ):
+                parts = []
+                frames = 0
+                continue
+
             parts.append(data)
             frames += len(data) // (2 * channels)
             if frames < target_frames:
@@ -258,6 +276,9 @@ class CompanionService:
         assert self.whisper is not None
 
         while not self.stop_event.is_set():
+            if self.paused_event.is_set():
+                time.sleep(0.1)
+                continue
             try:
                 chunk = self.audio_queue.get(timeout=0.5)
             except queue.Empty:
@@ -318,17 +339,32 @@ class CompanionService:
 
     def _analysis_loop(self) -> None:
         while not self.stop_event.wait(1.0):
+            if self.paused_event.is_set():
+                continue
             now = time.monotonic()
             if now - self.last_analysis_at < self.analysis_interval:
                 continue
 
+            previous_sequence = self.last_analyzed_sequence
             latest_sequence, transcript = self._snapshot(TRANSCRIPT_WINDOW_CHARS)
-            if not transcript or latest_sequence <= self.last_analyzed_sequence:
+            if not transcript or latest_sequence <= previous_sequence:
                 continue
+
+            with self.transcript_lock:
+                new_rows = [
+                    f"[{source}] {text}"
+                    for seq, _ts, source, text in self.transcript
+                    if seq > previous_sequence
+                ]
+            new_transcript = "\n".join(new_rows)
 
             self.last_analysis_at = now
             self.last_analyzed_sequence = latest_sequence
-            self._request_advice(transcript, direct_question=None)
+            self._request_advice(
+                transcript,
+                direct_question=None,
+                new_transcript=new_transcript,
+            )
 
     def _ollama_tags(self) -> list[dict[str, Any]]:
         request = urllib.request.Request(
@@ -444,6 +480,7 @@ class CompanionService:
         self,
         transcript: str,
         direct_question: str | None,
+        new_transcript: str | None = None,
     ) -> None:
         assert self.client is not None
 
@@ -457,10 +494,15 @@ class CompanionService:
             )
         else:
             prompt = (
-                "Review this recent rolling meeting transcript. Decide whether the user needs useful coaching RIGHT NOW. "
-                f"If no intervention is materially useful, output exactly {SILENT_MARKER}. "
-                "Do not summarize the meeting. If intervention is useful, give only the short advice the user needs next.\n\n"
-                "Recent transcript:\n"
+                "Decide whether the NEWEST meeting speech creates a useful reason to coach the user right now. "
+                f"If not, output exactly {SILENT_MARKER}. "
+                "Do not repeat advice already implied by older context. "
+                "Never comment on transcript speed, transcript delay, silence, audio quality, context windows, "
+                "or the operation of the meeting assistant. If the newest speech is too incomplete or unclear, "
+                f"output exactly {SILENT_MARKER}.\n\n"
+                "NEWEST SPEECH SINCE THE LAST CHECK:\n"
+                f"{new_transcript or ''}\n\n"
+                "OLDER ROLLING CONTEXT FOR UNDERSTANDING ONLY:\n"
                 f"{transcript}"
             )
 
@@ -537,8 +579,42 @@ class CompanionService:
 
         if not text or text.upper() == SILENT_MARKER:
             return
+
+        fingerprint = " ".join(
+            "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()
+        )
+        now = time.monotonic()
+        if (
+            fingerprint
+            and fingerprint == self.last_advice_fingerprint
+            and now - self.last_advice_at < 90.0
+        ):
+            return
+
+        self.last_advice_fingerprint = fingerprint
+        self.last_advice_at = now
         emit("output-transcript", {"text": text, "provider": provider})
         emit("generation-complete", {"provider": provider})
+
+    def set_paused(self, paused: bool) -> None:
+        if paused:
+            self.paused_event.set()
+            while True:
+                try:
+                    self.audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+            emit("status", {"state": "paused", "reason": "Listening and analysis paused."})
+        else:
+            self.paused_event.clear()
+            emit("status", {"state": "connected", "reason": "Local Whisper is listening."})
+
+    def set_output_speaking(self, speaking: bool) -> None:
+        if speaking:
+            self.output_speaking_event.set()
+        else:
+            self.output_speaking_event.clear()
+            self.suppress_system_until = time.monotonic() + 0.45
 
     def ask(self, text: str) -> None:
         question = clean_text(text)
@@ -707,6 +783,12 @@ def main() -> int:
             command_type = command.get("type")
             if command_type == "ask":
                 service.ask(str(command.get("text") or ""))
+            elif command_type == "pause":
+                service.set_paused(True)
+            elif command_type == "resume":
+                service.set_paused(False)
+            elif command_type == "output-speaking":
+                service.set_output_speaking(bool(command.get("speaking")))
             elif command_type == "stop":
                 break
     except KeyboardInterrupt:

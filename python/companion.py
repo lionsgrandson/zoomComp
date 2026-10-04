@@ -399,6 +399,7 @@ class CompanionService:
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": prompt},
                 ],
+                "think": False,
                 "options": {"temperature": 0.2},
             }
         ).encode("utf-8")

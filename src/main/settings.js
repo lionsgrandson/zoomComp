@@ -14,6 +14,12 @@ const DEFAULTS = {
   ollamaModel: ''
 };
 
+function normalizeModel(value) {
+  const model = typeof value === 'string' ? value.trim() : '';
+  if (!model || model.includes('-live')) return DEFAULTS.model;
+  return model;
+}
+
 function filePath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
@@ -39,7 +45,7 @@ export function getPublicSettings() {
     context: typeof raw.context === 'string' ? raw.context : '',
     audioEnabled: raw.audioEnabled !== false,
     alwaysOnTop: raw.alwaysOnTop !== false,
-    model: raw.model || DEFAULTS.model,
+    model: normalizeModel(raw.model),
     whisperModel: raw.whisperModel || DEFAULTS.whisperModel,
     intervalSeconds: Number(raw.intervalSeconds || DEFAULTS.intervalSeconds),
     ollamaEnabled: raw.ollamaEnabled !== false,
@@ -57,7 +63,9 @@ export function saveSettings(next = {}) {
     context: typeof next.context === 'string' ? next.context.slice(0, 20000) : (raw.context || ''),
     audioEnabled: typeof next.audioEnabled === 'boolean' ? next.audioEnabled : raw.audioEnabled !== false,
     alwaysOnTop: typeof next.alwaysOnTop === 'boolean' ? next.alwaysOnTop : raw.alwaysOnTop !== false,
-    model: typeof next.model === 'string' && next.model.trim() ? next.model.trim() : (raw.model || DEFAULTS.model),
+    model: normalizeModel(
+      typeof next.model === 'string' && next.model.trim() ? next.model : raw.model
+    ),
     whisperModel: typeof next.whisperModel === 'string' && next.whisperModel.trim()
       ? next.whisperModel.trim()
       : (raw.whisperModel || DEFAULTS.whisperModel),

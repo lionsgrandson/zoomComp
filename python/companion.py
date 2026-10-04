@@ -332,6 +332,94 @@ class CompanionService:
             self.last_analyzed_sequence = latest_sequence
             self._request_advice(transcript, direct_question=None)
 
+    def _ollama_tags(self) -> list[dict[str, Any]]:
+        request = urllib.request.Request(
+            self.ollama_url + "/api/tags",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=2.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        models = payload.get("models") if isinstance(payload, dict) else []
+        return models if isinstance(models, list) else []
+
+    def _select_ollama_model(self) -> str:
+        if self.ollama_model:
+            return self.ollama_model
+
+        models = self._ollama_tags()
+        if not models:
+            raise RuntimeError("Ollama is running but no local models are installed.")
+
+        preferred_prefixes = [
+            "qwen3.8",
+            "qwen3.6",
+            "qwen3.5",
+            "gpt-oss:120b",
+            "gpt-oss",
+            "qwen3:235b",
+            "qwen3:32b",
+            "qwen3:30b",
+            "qwen3",
+            "deepseek-r1",
+            "llama4",
+            "llama3.3",
+            "gemma3",
+        ]
+
+        normalized = []
+        for item in models:
+            name = str(item.get("name") or item.get("model") or "").strip()
+            if not name:
+                continue
+            normalized.append(
+                {
+                    "name": name,
+                    "lower": name.lower(),
+                    "size": int(item.get("size") or 0),
+                }
+            )
+
+        for prefix in preferred_prefixes:
+            matches = [m for m in normalized if m["lower"].startswith(prefix)]
+            if matches:
+                matches.sort(key=lambda m: m["size"], reverse=True)
+                return matches[0]["name"]
+
+        normalized.sort(key=lambda m: m["size"], reverse=True)
+        return normalized[0]["name"]
+
+    def _request_ollama(self, prompt: str) -> tuple[str, str]:
+        if not self.ollama_enabled:
+            raise RuntimeError("Ollama fallback is disabled.")
+
+        model = self._select_ollama_model()
+        body = json.dumps(
+            {
+                "model": model,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "options": {"temperature": 0.2},
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            self.ollama_url + "/api/chat",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+
+        text = clean_text(
+            str(((payload.get("message") or {}).get("content")) or "")
+        )
+        if not text:
+            raise RuntimeError(f"Ollama model {model} returned no text.")
+        return text, model
+
     def _request_advice(
         self,
         transcript: str,
@@ -361,8 +449,8 @@ class CompanionService:
                 "system_instruction": self.system_prompt,
                 "thinking_config": types.ThinkingConfig(thinking_level="low"),
                 "max_output_tokens": 220,
+                "tools": [types.Tool(google_search=types.GoogleSearch())],
             }
-            config_args["tools"] = [types.Tool(google_search=types.GoogleSearch())]
 
             with self.api_lock:
                 response = self.client.models.generate_content(
@@ -370,34 +458,48 @@ class CompanionService:
                     contents=prompt,
                     config=types.GenerateContentConfig(**config_args),
                 )
+
             self.api_backoff_seconds = 0.0
             self.api_blocked_until = 0.0
             text = clean_text(response.text or "")
-            if not text or text.upper() == SILENT_MARKER:
-                return
-            emit("output-transcript", {"text": text})
-            emit("generation-complete", {})
+            provider = "Gemini"
         except Exception as exc:
-            message = str(exc)
-            lower = message.lower()
-            if "429" in lower or "quota" in lower or "resource_exhausted" in lower:
-                self.api_backoff_seconds = min(
-                    300.0,
-                    max(30.0, self.api_backoff_seconds * 2.0),
+            gemini_message = str(exc)
+            try:
+                text, ollama_model = self._request_ollama(prompt)
+                provider = f"Ollama · {ollama_model}"
+                emit(
+                    "provider",
+                    {
+                        "provider": "ollama",
+                        "model": ollama_model,
+                        "reason": gemini_message,
+                    },
                 )
-                self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
+            except Exception as ollama_exc:
+                lower = gemini_message.lower()
+                if "429" in lower or "quota" in lower or "resource_exhausted" in lower:
+                    self.api_backoff_seconds = min(
+                        300.0,
+                        max(30.0, self.api_backoff_seconds * 2.0),
+                    )
+                    self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
+
                 emit(
                     "error",
                     {
                         "message": (
-                            f"Gemini text quota/rate limit reached. Local transcription keeps running. "
-                            f"Automatic analysis is backing off for {int(self.api_backoff_seconds)} seconds. "
-                            + message
+                            f"Gemini failed: {gemini_message} "
+                            f"Ollama fallback also failed: {ollama_exc}"
                         )
                     },
                 )
-            else:
-                emit("error", {"message": f"Gemini analysis error: {message}"})
+                return
+
+        if not text or text.upper() == SILENT_MARKER:
+            return
+        emit("output-transcript", {"text": text, "provider": provider})
+        emit("generation-complete", {"provider": provider})
 
     def ask(self, text: str) -> None:
         question = clean_text(text)

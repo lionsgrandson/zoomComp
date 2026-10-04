@@ -550,7 +550,7 @@ class CompanionService:
                 )
                 return
         else:
-                try:
+            try:
                 config_args: dict[str, Any] = {
                     "system_instruction": self.system_prompt,
                     "thinking_config": types.ThinkingConfig(thinking_level="low"),

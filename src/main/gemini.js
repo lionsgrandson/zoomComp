@@ -1,7 +1,28 @@
 import { GoogleGenAI, Modality } from '@google/genai';
 import { buildSystemPrompt } from './prompts.js';
 
-const RECONNECT_DELAYS = [400, 900, 1800, 3500, 7000];
+const RECONNECT_DELAYS = [1000, 2500, 5000, 10000, 20000, 30000];
+const MAX_RECONNECT_ATTEMPTS = RECONNECT_DELAYS.length;
+
+function isQuotaError(value) {
+  const text = [
+    value?.message,
+    value?.reason,
+    value?.error?.message,
+    value?.code,
+    value?.error?.code
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  return (
+    text.includes('quota') ||
+    text.includes('resource_exhausted') ||
+    text.includes('resource has been exhausted') ||
+    text.includes('too many requests') ||
+    text.includes('rate limit') ||
+    text.includes('billing') ||
+    text.includes('429')
+  );
+}
 
 export class GeminiCoach {
   constructor(emit) {
@@ -56,10 +77,28 @@ export class GeminiCoach {
           onmessage: (message) => this.#onMessage(message),
           onerror: (event) => {
             const message = event?.message || event?.error?.message || 'Gemini Live connection error';
+            if (isQuotaError(event)) {
+              this.manualStop = true;
+              clearTimeout(this.reconnectTimer);
+              this.reconnectTimer = null;
+              this.emit('error', {
+                message: `${message}. Automatic reconnect stopped to avoid consuming more quota.`
+              });
+              return;
+            }
             this.emit('error', { message });
           },
           onclose: (event) => {
             this.session = null;
+            if (isQuotaError(event)) {
+              this.manualStop = true;
+              clearTimeout(this.reconnectTimer);
+              this.reconnectTimer = null;
+              this.emit('error', {
+                message: `${event?.reason || 'Gemini quota exceeded'}. Automatic reconnect stopped to avoid consuming more quota.`
+              });
+              return;
+            }
             if (!this.manualStop) {
               this.emit('status', { state: 'reconnecting', reason: event?.reason || 'connection closed' });
               this.#scheduleReconnect();
@@ -69,8 +108,16 @@ export class GeminiCoach {
       });
     } catch (error) {
       this.session = null;
-      this.emit('error', { message: error?.message || String(error) });
-      if (!this.manualStop) this.#scheduleReconnect();
+      const message = error?.message || String(error);
+      if (isQuotaError(error)) {
+        this.manualStop = true;
+        this.emit('error', {
+          message: `${message}. Automatic reconnect stopped to avoid consuming more quota.`
+        });
+      } else {
+        this.emit('error', { message });
+        if (!this.manualStop) this.#scheduleReconnect();
+      }
       throw error;
     } finally {
       this.connecting = false;
@@ -79,8 +126,14 @@ export class GeminiCoach {
 
   #scheduleReconnect() {
     if (this.manualStop || this.reconnectTimer) return;
-    const index = Math.min(this.reconnectAttempt, RECONNECT_DELAYS.length - 1);
-    const delay = RECONNECT_DELAYS[index];
+    if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      this.manualStop = true;
+      this.emit('error', {
+        message: 'Gemini could not reconnect after several attempts. Automatic reconnect stopped.'
+      });
+      return;
+    }
+    const delay = RECONNECT_DELAYS[this.reconnectAttempt];
     this.reconnectAttempt += 1;
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;

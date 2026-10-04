@@ -199,6 +199,17 @@ export class GeminiCoach {
     }
   }
 
+  endAudioStream() {
+    if (!this.session || this.manualStop) return false;
+    try {
+      this.session.sendRealtimeInput({ audioStreamEnd: true });
+      return true;
+    } catch (error) {
+      this.emit('error', { message: error?.message || String(error) });
+      return false;
+    }
+  }
+
   sendText(text) {
     if (!this.session || !text?.trim()) return false;
     try {

@@ -23,11 +23,11 @@ from google.genai import types
 
 TARGET_RATE = 16000
 READ_FRAMES = 1024
-TRANSCRIBE_CHUNK_SECONDS = 3.0
-TRANSCRIPT_WINDOW_CHARS = 2600
-TRANSCRIPT_WINDOW_SECONDS = 45
+TRANSCRIBE_CHUNK_SECONDS = 2.0
+TRANSCRIPT_WINDOW_CHARS = 1800
+TRANSCRIPT_WINDOW_SECONDS = 30
 ASK_WINDOW_CHARS = 9000
-AUTO_MAX_WORDS = 25
+AUTO_MAX_WORDS = 18
 SILENT_MARKER = "[SILENT]"
 HUMAN_OUTPUT = False
 
@@ -98,9 +98,12 @@ class CompanionService:
     def __init__(self, config: dict[str, Any]) -> None:
         self.api_key = str(config.get("apiKey") or "").strip()
         self.model_name = str(config.get("model") or "gemini-3.8-flash").strip()
+        self.auto_model_name = str(
+            config.get("autoModel") or "gemini-3.5-flash-lite"
+        ).strip()
         self.whisper_model_name = str(config.get("whisperModel") or "small").strip()
         self.system_prompt = str(config.get("systemPrompt") or "").strip()
-        self.analysis_interval = max(6.0, float(config.get("intervalSeconds") or 8))
+        self.analysis_interval = max(3.0, float(config.get("intervalSeconds") or 4))
         self.ollama_enabled = bool(config.get("ollamaEnabled", True))
         self.ollama_model = str(config.get("ollamaModel") or "").strip()
         self.ollama_url = str(config.get("ollamaUrl") or "http://127.0.0.1:11434").rstrip("/")
@@ -122,6 +125,7 @@ class CompanionService:
         self.api_backoff_seconds = 0.0
 
         self.api_lock = threading.Lock()
+        self.analysis_slots = threading.BoundedSemaphore(2)
         self.pa: pyaudio.PyAudio | None = None
         self.streams: list[Any] = []
         self.capture_threads: list[threading.Thread] = []
@@ -374,9 +378,10 @@ class CompanionService:
         return latest_sequence, "\n".join(selected)
 
     def _analysis_loop(self) -> None:
-        while not self.stop_event.wait(1.0):
+        while not self.stop_event.wait(0.5):
             if self.paused_event.is_set():
                 continue
+
             now = time.monotonic()
             if now - self.last_analysis_at < self.analysis_interval:
                 continue
@@ -389,6 +394,9 @@ class CompanionService:
             if not transcript or latest_sequence <= previous_sequence:
                 continue
 
+            if not self.analysis_slots.acquire(blocking=False):
+                continue
+
             with self.transcript_lock:
                 new_rows = [
                     f"[{source}] {text}"
@@ -399,13 +407,36 @@ class CompanionService:
 
             self.last_analysis_at = now
             self.last_analyzed_sequence = latest_sequence
+
+            threading.Thread(
+                target=self._run_auto_request,
+                args=(
+                    transcript,
+                    new_transcript,
+                    latest_sequence,
+                    time.monotonic(),
+                ),
+                name=f"fast-coach-{latest_sequence}",
+                daemon=True,
+            ).start()
+
+    def _run_auto_request(
+        self,
+        transcript: str,
+        new_transcript: str,
+        request_sequence: int,
+        request_started_at: float,
+    ) -> None:
+        try:
             self._request_advice(
                 transcript,
                 direct_question=None,
                 new_transcript=new_transcript,
-                request_sequence=latest_sequence,
-                request_started_at=time.monotonic(),
+                request_sequence=request_sequence,
+                request_started_at=request_started_at,
             )
+        finally:
+            self.analysis_slots.release()
 
     def _ollama_tags(self) -> list[dict[str, Any]]:
         request = urllib.request.Request(
@@ -517,6 +548,138 @@ class CompanionService:
             raise RuntimeError(f"Ollama model {model} returned no direct answer.")
         return text, model
 
+    def _is_fresh(
+        self,
+        request_sequence: int | None,
+        request_started_at: float | None,
+        max_elapsed: float,
+        max_advance: int,
+    ) -> bool:
+        elapsed = (
+            time.monotonic() - request_started_at
+            if request_started_at is not None
+            else 0.0
+        )
+        with self.transcript_lock:
+            current_sequence = self.next_sequence - 1
+
+        advanced_by = (
+            current_sequence - request_sequence
+            if request_sequence is not None
+            else 0
+        )
+        return elapsed <= max_elapsed and advanced_by <= max_advance
+
+    def _emit_advice(
+        self,
+        text: str,
+        provider: str,
+        kind: str,
+        request_sequence: int | None = None,
+        request_started_at: float | None = None,
+    ) -> None:
+        text = clean_text(text)
+        if not text or text.upper() == SILENT_MARKER:
+            return
+
+        if kind == "automatic":
+            text = limit_words(text, AUTO_MAX_WORDS)
+            if not self._is_fresh(
+                request_sequence,
+                request_started_at,
+                max_elapsed=8.0,
+                max_advance=3,
+            ):
+                emit(
+                    "stale-advice",
+                    {"reason": "Fast coaching answer arrived after the conversation moved on."},
+                )
+                return
+        elif kind == "research":
+            text = limit_words(text, 24)
+            if not self._is_fresh(
+                request_sequence,
+                request_started_at,
+                max_elapsed=14.0,
+                max_advance=4,
+            ):
+                emit(
+                    "stale-advice",
+                    {"reason": "Research answer arrived after the conversation moved on."},
+                )
+                return
+
+        fingerprint = " ".join(
+            "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()
+        )
+        now = time.monotonic()
+        if (
+            fingerprint
+            and fingerprint == self.last_advice_fingerprint
+            and now - self.last_advice_at < 60.0
+        ):
+            return
+
+        self.last_advice_fingerprint = fingerprint
+        self.last_advice_at = now
+        emit(
+            "output-transcript",
+            {"text": text, "provider": provider, "kind": kind},
+        )
+        emit("generation-complete", {"provider": provider, "kind": kind})
+
+    def _request_deep_search(
+        self,
+        search_query: str,
+        transcript: str,
+        request_sequence: int | None,
+        request_started_at: float | None,
+    ) -> None:
+        assert self.client is not None
+
+        prompt = (
+            "A meeting copilot needs a very short, verified answer right now. "
+            "Use Google Search to verify the external/current fact. "
+            "Return only the practical answer the user needs, maximum 24 words.\n\n"
+            f"SEARCH / VERIFY:\n{search_query}\n\n"
+            f"RECENT MEETING CONTEXT:\n{transcript}"
+        )
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=self.system_prompt,
+                    thinking_config=types.ThinkingConfig(thinking_level="low"),
+                    max_output_tokens=120,
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            self._emit_advice(
+                response.text or "",
+                "Gemini · verified",
+                "research",
+                request_sequence,
+                request_started_at,
+            )
+        except Exception as exc:
+            try:
+                text, ollama_model = self._request_ollama(
+                    prompt
+                    + "\n\nWeb verification is unavailable. If you cannot answer safely "
+                    "from local knowledge, output exactly [SILENT]."
+                )
+                self._emit_advice(
+                    text,
+                    f"Ollama · {ollama_model} · unverified",
+                    "research",
+                    request_sequence,
+                    request_started_at,
+                )
+            except Exception:
+                emit("log", {"message": f"Background verification failed: {exc}"})
+
     def _request_advice(
         self,
         transcript: str,
@@ -529,157 +692,116 @@ class CompanionService:
 
         if direct_question:
             prompt = (
-                "The user privately asked the following during an ongoing meeting:\n"
+                "The user privately asked this during an ongoing meeting:\n"
                 f"{direct_question}\n\n"
-                "Recent meeting transcript:\n"
-                f"{transcript}\n\n"
-                "Answer the user's private question directly. Keep it concise and immediately usable. "
-                "Prefer one short answer, then one optional next point."
+                "Use the recent meeting context below. Answer directly and concisely. "
+                "If external/current verification matters, use Google Search.\n\n"
+                f"RECENT CONTEXT:\n{transcript}"
             )
-        else:
-            prompt = (
-                "Decide whether the NEWEST meeting speech creates a useful reason to coach the user right now. "
-                f"If not, output exactly {SILENT_MARKER}. "
-                "Only react to the newest speech. Older context is for disambiguation only and must never become "
-                "the reason for an intervention. Do not repeat advice already implied by older context. "
-                "Automatic coaching must be extremely short: one sentence if possible, maximum 25 words. "
-                "Never comment on transcript speed, transcript delay, silence, audio quality, context windows, "
-                "or the operation of the meeting assistant. If the newest speech is too incomplete or unclear, "
-                f"output exactly {SILENT_MARKER}.\n\n"
-                "NEWEST SPEECH SINCE THE LAST CHECK:\n"
-                f"{new_transcript or ''}\n\n"
-                "OLDER ROLLING CONTEXT FOR UNDERSTANDING ONLY:\n"
-                f"{transcript}"
-            )
-
-        if time.monotonic() < self.api_blocked_until:
             try:
-                text, ollama_model = self._request_ollama(prompt)
-                provider = f"Ollama · {ollama_model}"
-                emit(
-                    "provider",
-                    {"provider": "ollama", "model": ollama_model, "reason": "Gemini backoff active"},
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        thinking_config=types.ThinkingConfig(thinking_level="low"),
+                        max_output_tokens=320,
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                    ),
                 )
-            except Exception as ollama_exc:
-                emit(
-                    "error",
-                    {"message": f"Gemini is backing off and Ollama fallback failed: {ollama_exc}"},
-                )
+                self._emit_advice(response.text or "", "Gemini", "direct")
                 return
-        else:
-            try:
-                config_args: dict[str, Any] = {
-                    "system_instruction": self.system_prompt,
-                    "thinking_config": types.ThinkingConfig(thinking_level="low"),
-                    "max_output_tokens": 160 if direct_question is None else 320,
-                    "tools": [types.Tool(google_search=types.GoogleSearch())],
-                }
-
-                with self.api_lock:
-                    response = self.client.models.generate_content(
-                        model=self.model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(**config_args),
-                    )
-
-                self.api_backoff_seconds = 0.0
-                self.api_blocked_until = 0.0
-                text = clean_text(response.text or "")
-                provider = "Gemini"
             except Exception as exc:
-                gemini_message = str(exc)
-                gemini_lower = gemini_message.lower()
-                if "429" in gemini_lower or "quota" in gemini_lower or "resource_exhausted" in gemini_lower:
-                    self.api_backoff_seconds = min(
-                        300.0,
-                        max(30.0, self.api_backoff_seconds * 2.0),
-                    )
-                    self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
-
                 try:
                     text, ollama_model = self._request_ollama(prompt)
-                    provider = f"Ollama · {ollama_model}"
-                    emit(
-                        "provider",
-                        {
-                            "provider": "ollama",
-                            "model": ollama_model,
-                            "reason": gemini_message,
-                        },
-                    )
+                    self._emit_advice(text, f"Ollama · {ollama_model}", "direct")
                 except Exception as ollama_exc:
                     emit(
                         "error",
                         {
                             "message": (
-                                f"Gemini failed: {gemini_message} "
+                                f"Gemini failed: {exc} "
                                 f"Ollama fallback also failed: {ollama_exc}"
                             )
                         },
                     )
+                return
+
+        prompt = (
+            "You are the FAST reaction layer of a private meeting copilot. "
+            "Base your decision on the last few utterances, with the newest speech weighted most heavily. "
+            "Do not explain. Do not summarize. Do not answer an old topic just because it appears in context.\n\n"
+            "Return exactly one of these forms:\n"
+            f"1. {SILENT_MARKER}\n"
+            "2. [SEARCH] followed by a short search query, only when an external/current fact must be verified.\n"
+            "3. One immediately useful coaching sentence, maximum 18 words.\n\n"
+            "Use [SILENT] when the conversation is routine, incomplete, or the user does not need help. "
+            "If someone asks the user a substantive question, usually provide a concise suggested answer.\n\n"
+            f"NEWEST SPEECH:\n{new_transcript or ''}\n\n"
+            f"LAST FEW UTTERANCES:\n{transcript}"
+        )
+
+        if time.monotonic() < self.api_blocked_until:
+            try:
+                text, ollama_model = self._request_ollama(prompt)
+                provider = f"Ollama · {ollama_model}"
+            except Exception:
+                return
+        else:
+            try:
+                response = self.client.models.generate_content(
+                    model=self.auto_model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+                        max_output_tokens=72,
+                    ),
+                )
+                text = clean_text(response.text or "")
+                provider = "Gemini Fast"
+                self.api_backoff_seconds = 0.0
+                self.api_blocked_until = 0.0
+            except Exception as exc:
+                message = str(exc).lower()
+                if "429" in message or "quota" in message or "resource_exhausted" in message:
+                    self.api_backoff_seconds = min(
+                        300.0,
+                        max(30.0, self.api_backoff_seconds * 2.0),
+                    )
+                    self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
+                try:
+                    text, ollama_model = self._request_ollama(prompt)
+                    provider = f"Ollama · {ollama_model}"
+                except Exception:
                     return
 
         if not text or text.upper() == SILENT_MARKER:
             return
 
-        if direct_question is None:
-            text = limit_words(text, AUTO_MAX_WORDS)
-
-            elapsed = (
-                time.monotonic() - request_started_at
-                if request_started_at is not None
-                else 0.0
-            )
-            with self.transcript_lock:
-                current_sequence = self.next_sequence - 1
-
-            transcript_advanced = (
-                request_sequence is not None
-                and current_sequence > request_sequence
-            )
-            advanced_by = (
-                current_sequence - request_sequence
-                if request_sequence is not None
-                else 0
-            )
-
-            if advanced_by >= 2 or (elapsed >= 6.0 and transcript_advanced):
-                emit(
-                    "stale-advice",
-                    {
-                        "reason": "Conversation moved on before the coaching answer returned.",
-                        "elapsedSeconds": round(elapsed, 1),
-                    },
-                )
+        if text.upper().startswith("[SEARCH]"):
+            query = clean_text(text[len("[SEARCH]"):])
+            if not query:
                 return
-
-        fingerprint = " ".join(
-            "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()
-        )
-        now = time.monotonic()
-        if (
-            fingerprint
-            and fingerprint == self.last_advice_fingerprint
-            and now - self.last_advice_at < 90.0
-        ):
+            threading.Thread(
+                target=self._request_deep_search,
+                args=(
+                    query,
+                    transcript,
+                    request_sequence,
+                    request_started_at,
+                ),
+                name="meeting-research",
+                daemon=True,
+            ).start()
             return
 
-        self.last_advice_fingerprint = fingerprint
-        self.last_advice_at = now
-        emit(
-            "output-transcript",
-            {
-                "text": text,
-                "provider": provider,
-                "kind": "direct" if direct_question is not None else "automatic",
-            },
-        )
-        emit(
-            "generation-complete",
-            {
-                "provider": provider,
-                "kind": "direct" if direct_question is not None else "automatic",
-            },
+        self._emit_advice(
+            text,
+            provider,
+            "automatic",
+            request_sequence,
+            request_started_at,
         )
 
     def set_paused(self, paused: bool) -> None:
@@ -766,7 +888,7 @@ def standalone_main() -> int:
     parser.add_argument("--mode", choices=["sales", "interview", "general"], default="sales")
     parser.add_argument("--model", default=os.environ.get("ZOOM_COMPANION_MODEL", "gemini-3.8-flash"))
     parser.add_argument("--whisper-model", default=os.environ.get("ZOOM_COMPANION_WHISPER_MODEL", "small"))
-    parser.add_argument("--interval", type=float, default=float(os.environ.get("ZOOM_COMPANION_INTERVAL", "8")))
+    parser.add_argument("--interval", type=float, default=float(os.environ.get("ZOOM_COMPANION_INTERVAL", "4")))
     parser.add_argument("--context-file", default=os.environ.get("ZOOM_COMPANION_CONTEXT_FILE", "context.txt"))
     args = parser.parse_args()
 

@@ -35,8 +35,14 @@
       <p id="captureInfo" class="muted">Audio capture is off.</p>
     </section>
 
+    <details class="trace-panel">
+      <summary>Decision trace</summary>
+      <div id="decisionTrace" class="transcript">No decisions yet.</div>
+      <p class="muted">Shows high-level routing and timing, not private model reasoning.</p>
+    </details>
+
     <form id="askForm" class="ask-row">
-      <input id="askInput" type="text" maxlength="500" autocomplete="off" placeholder="Ask privately during the meeting…" />
+      <input id="askInput" type="text" maxlength="500" autocomplete="off" placeholder="Ask privately… Prefix with /detail for a longer answer" />
       <button type="submit" class="secondary">Ask</button>
     </form>
 
@@ -64,22 +70,23 @@
         <label>
           <span>Whisper model</span>
           <select id="whisperModel">
-            <option value="base">Base · faster</option>
-            <option value="small">Small · recommended</option>
-            <option value="medium">Medium · more accurate / heavier</option>
-            <option value="large-v3">Large v3 · most accurate / heavy</option>
+            <option value="tiny">Tiny · fastest / less accurate</option>
+            <option value="base">Base · recommended</option>
+            <option value="small">Small · more accurate / slower</option>
+            <option value="medium">Medium · heavy</option>
+            <option value="large-v3">Large v3 · very heavy</option>
           </select>
         </label>
 
         <label>
           <span>Analyze every</span>
           <select id="intervalSeconds">
-            <option value="3">3 seconds · fastest</option>
-            <option value="4">4 seconds · recommended</option>
+            <option value="1.5">1.5 seconds · aggressive</option>
+            <option value="2">2 seconds · recommended</option>
+            <option value="3">3 seconds</option>
+            <option value="4">4 seconds</option>
             <option value="6">6 seconds</option>
             <option value="8">8 seconds</option>
-            <option value="12">12 seconds</option>
-            <option value="20">20 seconds</option>
           </select>
         </label>
 
@@ -111,7 +118,10 @@
         <input id="ollamaModel" type="text" autocomplete="off" spellcheck="false" placeholder="Auto-select strongest installed model" />
       </label>
 
-      <button id="saveSettings" class="ghost" type="button">Save settings</button>
+      <div class="settings-actions">
+        <button id="saveSettings" class="ghost" type="button">Save settings</button>
+        <button id="exportSession" class="ghost" type="button">Export session</button>
+      </div>
     </section>
 
     <label class="consent check">
@@ -123,7 +133,7 @@
       <button id="startStop" class="primary" type="button">Start companion</button>
       <button id="pauseResume" class="secondary" type="button" disabled>Pause</button>
     </div>
-    <p class="privacy">Meeting audio is transcribed locally on this PC. Gemini receives rolling transcript text, not raw meeting audio. The app does not intentionally save meeting audio or transcripts to disk.</p>
+    <p class="privacy">Meeting audio is transcribed locally on this PC. Gemini receives rolling transcript text, not raw meeting audio. Nothing is intentionally saved to disk unless you choose Export session.</p>
   </main>
   <script src="./app.js"></script>
 </body>

@@ -64,6 +64,7 @@ function registerIpc() {
       apiKey,
       hfToken: getHfToken(),
       model: settings.model,
+      autoModel: settings.autoModel,
       whisperModel: settings.whisperModel,
       intervalSeconds: settings.intervalSeconds,
       ollamaEnabled: settings.ollamaEnabled,

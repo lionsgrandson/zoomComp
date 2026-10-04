@@ -94,6 +94,10 @@ function registerIpc() {
     coach?.sendAudio(arrayBuffer);
   });
 
+  ipcMain.on('companion:audio-end', () => {
+    coach?.endAudioStream();
+  });
+
   ipcMain.handle('companion:ask', (_event, text) => ({ ok: Boolean(coach?.sendText(text)) }));
   ipcMain.handle('companion:stop', () => {
     coach?.stop();

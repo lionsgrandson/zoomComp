@@ -14,6 +14,7 @@ const ui = {
   speechRate: $('speechRate'),
   consent: $('consent'),
   save: $('saveSettings'),
+  export: $('exportSession'),
   start: $('startStop'),
   pause: $('pauseResume'),
   status: $('status'),
@@ -21,6 +22,7 @@ const ui = {
   advice: $('advice'),
   provider: $('provider'),
   transcript: $('transcript'),
+  trace: $('decisionTrace'),
   askForm: $('askForm'),
   askInput: $('askInput'),
   compact: $('compact'),
@@ -31,11 +33,41 @@ let running = false;
 let paused = false;
 let compact = false;
 let transcriptLines = [];
+let sessionTranscript = [];
+let adviceHistory = [];
+let decisionTrace = [];
+let runtimeLogs = [];
+let sessionStartedAt = null;
 let speechQueue = [];
 let speechActive = false;
 let currentUtterance = null;
 let lastSpeechFingerprint = '';
 let lastSpeechAt = 0;
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function pushRuntimeLog(type, message) {
+  const clean = String(message || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return;
+  runtimeLogs.push({ time: nowIso(), type, message: clean });
+  if (runtimeLogs.length > 1000) runtimeLogs = runtimeLogs.slice(-1000);
+}
+
+function pushTrace(message) {
+  const clean = String(message || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return;
+  decisionTrace.push({ time: nowIso(), message: clean });
+  if (decisionTrace.length > 250) decisionTrace = decisionTrace.slice(-250);
+
+  const visible = decisionTrace.slice(-16).map((row) => {
+    const time = new Date(row.time).toLocaleTimeString();
+    return `${time} · ${row.message}`;
+  });
+  ui.trace.textContent = visible.join('\n') || 'No decisions yet.';
+  ui.trace.scrollTop = ui.trace.scrollHeight;
+}
 
 function setStatus(state, detail = '') {
   const labels = {
@@ -51,11 +83,13 @@ function setStatus(state, detail = '') {
     ? `${labels[state] || state}: ${detail}`
     : (labels[state] || state);
   ui.statusDot.dataset.state = state;
+  pushRuntimeLog('status', detail ? `${state}: ${detail}` : state);
 }
 
 function addTranscript(text) {
   const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
   if (!cleaned) return;
+  sessionTranscript.push({ time: nowIso(), text: cleaned });
   transcriptLines.push(cleaned);
   if (transcriptLines.length > 24) transcriptLines = transcriptLines.slice(-24);
   ui.transcript.textContent = transcriptLines.join('\n');
@@ -202,6 +236,14 @@ async function start() {
   }
 
   ui.start.disabled = true;
+  sessionStartedAt = nowIso();
+  transcriptLines = [];
+  sessionTranscript = [];
+  adviceHistory = [];
+  decisionTrace = [];
+  runtimeLogs = [];
+  ui.transcript.textContent = 'No transcript yet.';
+  ui.trace.textContent = 'No decisions yet.';
   setStatus('connecting', 'Saving settings…');
   ui.provider.textContent = 'Provider: starting';
   ui.captureInfo.textContent = 'Preparing local transcription…';
@@ -295,10 +337,12 @@ window.zoomComp.onEvent(({ type, payload }) => {
 
     case 'capture-info':
       ui.captureInfo.textContent = payload.text || 'Local audio capture is active.';
+      pushRuntimeLog('capture', payload.text || 'Local audio capture is active.');
       break;
 
     case 'setup-progress':
       ui.captureInfo.textContent = payload.message || 'Installing local dependencies…';
+      pushRuntimeLog('setup', payload.message || 'Installing local dependencies…');
       break;
 
     case 'input-transcript':
@@ -306,24 +350,38 @@ window.zoomComp.onEvent(({ type, payload }) => {
       break;
 
     case 'user-speaking':
-      // Keep coaching audio playing while the user talks. The local worker
-      // continues transcribing the microphone independently.
+      break;
+
+    case 'trace':
+      pushTrace(payload.message || 'decision event');
       break;
 
     case 'stale-advice':
       ui.provider.textContent = 'Provider: skipped stale advice';
+      pushTrace(payload.reason || 'stale advice skipped');
       break;
 
     case 'output-transcript': {
       const text = String(payload.text || '').trim();
       if (!text) break;
       ui.advice.textContent = text;
+      adviceHistory.push({
+        time: nowIso(),
+        text,
+        provider: payload.provider || 'unknown',
+        kind: payload.kind || 'automatic'
+      });
       if (payload.provider) ui.provider.textContent = `Provider: ${payload.provider}`;
+      pushRuntimeLog('advice', `${payload.provider || 'unknown'}: ${text}`);
       speakAdvice(text, payload.kind || 'automatic');
       break;
     }
 
     case 'provider':
+      pushRuntimeLog(
+        'provider',
+        `${payload.provider || 'unknown'} ${payload.model || ''} ${payload.reason || ''}`.trim()
+      );
       if (payload.provider === 'ollama') {
         ui.provider.textContent = `Provider: Ollama · ${payload.model || 'local model'}`;
       } else if (payload.provider) {
@@ -332,10 +390,12 @@ window.zoomComp.onEvent(({ type, payload }) => {
       break;
 
     case 'log':
+      pushRuntimeLog('log', payload.message || '');
       if (!running && payload.message) ui.captureInfo.textContent = payload.message;
       break;
 
     case 'error':
+      pushRuntimeLog('error', payload.message || 'Unknown companion error');
       setStatus('error', payload.message || 'Unknown companion error');
       break;
 
@@ -348,6 +408,26 @@ window.zoomComp.onShortcutToggle(() => toggleRunning());
 
 ui.save.addEventListener('click', () => {
   saveSettings().catch(() => {});
+});
+
+ui.export.addEventListener('click', async () => {
+  try {
+    const result = await window.zoomComp.exportSession({
+      startedAt: sessionStartedAt,
+      endedAt: nowIso(),
+      transcript: sessionTranscript,
+      advice: adviceHistory,
+      trace: decisionTrace,
+      logs: runtimeLogs
+    });
+    if (result?.ok) {
+      pushRuntimeLog('export', `Session exported to ${result.filePath}`);
+      ui.export.textContent = 'Exported';
+      setTimeout(() => { ui.export.textContent = 'Export session'; }, 1400);
+    }
+  } catch (error) {
+    setStatus('error', error.message);
+  }
 });
 
 ui.start.addEventListener('click', toggleRunning);
@@ -390,8 +470,8 @@ ui.askForm.addEventListener('submit', async (event) => {
     ui.alwaysOnTop.checked = settings.alwaysOnTop !== false;
     ui.ollamaEnabled.checked = settings.ollamaEnabled !== false;
     ui.ollamaModel.value = settings.ollamaModel || '';
-    ui.whisperModel.value = settings.whisperModel || 'small';
-    ui.intervalSeconds.value = String(settings.intervalSeconds || 4);
+    ui.whisperModel.value = settings.whisperModel || 'base';
+    ui.intervalSeconds.value = String(settings.intervalSeconds || 2);
     ui.speechRate.value = String(settings.speechRate || 1.4);
 
     ui.apiKey.placeholder = settings.hasApiKey

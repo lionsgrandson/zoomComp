@@ -28,6 +28,12 @@ TRANSCRIPT_WINDOW_CHARS = 1800
 TRANSCRIPT_WINDOW_SECONDS = 30
 ASK_WINDOW_CHARS = 9000
 AUTO_MAX_WORDS = 18
+DIRECT_MAX_WORDS = 42
+SPEECH_START_RMS = 0.008
+SPEECH_END_RMS = 0.0045
+SPEECH_END_SILENCE_SECONDS = 0.35
+SPEECH_MAX_SEGMENT_SECONDS = 2.4
+SPEECH_PRE_ROLL_SECONDS = 0.18
 SILENT_MARKER = "[SILENT]"
 HUMAN_OUTPUT = False
 
@@ -113,7 +119,7 @@ class CompanionService:
         self.output_speaking_event = threading.Event()
         self.suppress_system_until = 0.0
         self.last_user_activity_emit = 0.0
-        self.audio_queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=12)
+        self.audio_queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=20)
         self.transcript_lock = threading.Lock()
         self.transcript: deque[tuple[int, float, str, str]] = deque(maxlen=180)
         self.next_sequence = 1
@@ -232,63 +238,36 @@ class CompanionService:
         thread.start()
 
     def _capture_loop(self, source: str, stream: Any, channels: int, rate: int) -> None:
-        target_frames = max(READ_FRAMES, int(rate * TRANSCRIBE_CHUNK_SECONDS))
-        parts: list[bytes] = []
-        frames = 0
+        bytes_per_frame = 2 * channels
+        pre_roll_blocks = max(
+            1,
+            int((rate * SPEECH_PRE_ROLL_SECONDS) / READ_FRAMES),
+        )
+        pre_roll: deque[bytes] = deque(maxlen=pre_roll_blocks)
+        speech_parts: list[bytes] = []
+        speech_frames = 0
+        silence_frames = 0
+        speech_active = False
 
-        while not self.stop_event.is_set():
-            try:
-                data = stream.read(READ_FRAMES, exception_on_overflow=False)
-            except Exception as exc:
-                if not self.stop_event.is_set():
-                    emit("error", {"message": f"{source} audio capture error: {exc}"})
+        def flush_segment() -> None:
+            nonlocal speech_parts, speech_frames, silence_frames, speech_active
+            if not speech_parts or speech_frames < int(rate * 0.25):
+                speech_parts = []
+                speech_frames = 0
+                silence_frames = 0
+                speech_active = False
                 return
 
-            if self.paused_event.is_set():
-                parts = []
-                frames = 0
-                continue
+            raw = b"".join(speech_parts)
+            speech_parts = []
+            speech_frames = 0
+            silence_frames = 0
+            speech_active = False
+            pre_roll.clear()
 
-            if source == "YOU":
-                block_pcm = np.frombuffer(data, dtype=np.int16)
-                if block_pcm.size:
-                    block_level = float(
-                        np.sqrt(
-                            np.mean(
-                                np.square(block_pcm.astype(np.float32) / 32768.0),
-                                dtype=np.float64,
-                            )
-                        )
-                    )
-                    now = time.monotonic()
-                    if block_level >= 0.012 and now - self.last_user_activity_emit >= 0.6:
-                        self.last_user_activity_emit = now
-                        emit("user-speaking", {})
-
-            if source == "MEETING" and (
-                self.output_speaking_event.is_set()
-                or time.monotonic() < self.suppress_system_until
-            ):
-                parts = []
-                frames = 0
-                continue
-
-            parts.append(data)
-            frames += len(data) // (2 * channels)
-            if frames < target_frames:
-                continue
-
-            raw = b"".join(parts)
-            parts = []
-            frames = 0
             audio = pcm16_to_float_mono(raw, channels, rate)
             if audio.size == 0:
-                continue
-
-            rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
-            if rms < 0.0015:
-                continue
-
+                return
             chunk = AudioChunk(source=source, audio=audio, captured_at=time.time())
             try:
                 self.audio_queue.put_nowait(chunk)
@@ -301,6 +280,80 @@ class CompanionService:
                     self.audio_queue.put_nowait(chunk)
                 except queue.Full:
                     pass
+
+        while not self.stop_event.is_set():
+            try:
+                data = stream.read(READ_FRAMES, exception_on_overflow=False)
+            except Exception as exc:
+                if not self.stop_event.is_set():
+                    emit("error", {"message": f"{source} audio capture error: {exc}"})
+                return
+
+            if self.paused_event.is_set():
+                pre_roll.clear()
+                speech_parts = []
+                speech_frames = 0
+                silence_frames = 0
+                speech_active = False
+                continue
+
+            if source == "MEETING" and (
+                self.output_speaking_event.is_set()
+                or time.monotonic() < self.suppress_system_until
+            ):
+                pre_roll.clear()
+                speech_parts = []
+                speech_frames = 0
+                silence_frames = 0
+                speech_active = False
+                continue
+
+            pcm = np.frombuffer(data, dtype=np.int16)
+            if pcm.size == 0:
+                continue
+            level = float(
+                np.sqrt(
+                    np.mean(
+                        np.square(pcm.astype(np.float32) / 32768.0),
+                        dtype=np.float64,
+                    )
+                )
+            )
+
+            if source == "YOU":
+                now = time.monotonic()
+                if level >= SPEECH_START_RMS and now - self.last_user_activity_emit >= 0.5:
+                    self.last_user_activity_emit = now
+                    emit("user-speaking", {})
+
+            if not speech_active:
+                pre_roll.append(data)
+                if level < SPEECH_START_RMS:
+                    continue
+                speech_active = True
+                speech_parts.extend(pre_roll)
+                speech_frames = sum(len(block) // bytes_per_frame for block in pre_roll)
+                pre_roll.clear()
+                silence_frames = 0
+                emit("trace", {"message": f"{source.lower()} speech detected"})
+                continue
+
+            speech_parts.append(data)
+            block_frames = len(data) // bytes_per_frame
+            speech_frames += block_frames
+
+            if level <= SPEECH_END_RMS:
+                silence_frames += block_frames
+            else:
+                silence_frames = 0
+
+            if (
+                silence_frames >= int(rate * SPEECH_END_SILENCE_SECONDS)
+                or speech_frames >= int(rate * SPEECH_MAX_SEGMENT_SECONDS)
+            ):
+                flush_segment()
+
+        flush_segment()
 
     def _transcription_loop(self) -> None:
         assert self.whisper is not None
@@ -315,12 +368,12 @@ class CompanionService:
                 continue
 
             try:
+                transcribe_started = time.monotonic()
                 segments, _info = self.whisper.transcribe(
                     chunk.audio,
                     beam_size=1,
                     best_of=1,
-                    vad_filter=True,
-                    vad_parameters={"min_silence_duration_ms": 250},
+                    vad_filter=False,
                     condition_on_previous_text=False,
                     temperature=0.0,
                 )
@@ -335,6 +388,15 @@ class CompanionService:
 
                 text = clean_text(" ".join(pieces))
                 if text:
+                    elapsed = time.monotonic() - transcribe_started
+                    emit(
+                        "trace",
+                        {
+                            "message": (
+                                f"transcribed {chunk.source.lower()} in {elapsed:.2f}s"
+                            )
+                        },
+                    )
                     self._append_transcript(chunk.source, text, chunk.captured_at)
             except Exception as exc:
                 emit("error", {"message": f"Local transcription error: {exc}"})
@@ -694,7 +756,9 @@ class CompanionService:
             prompt = (
                 "The user privately asked this during an ongoing meeting:\n"
                 f"{direct_question}\n\n"
-                "Use the recent meeting context below. Answer directly and concisely. "
+                "Use the recent meeting context below. Give only the answer the user needs right now. "
+                "Maximum 42 words unless the user explicitly asks for detail. "
+                "No headings, no bullets, no recap, no rationale section, no 'why this works'. "
                 "If external/current verification matters, use Google Search.\n\n"
                 f"RECENT CONTEXT:\n{transcript}"
             )
@@ -705,16 +769,24 @@ class CompanionService:
                     config=types.GenerateContentConfig(
                         system_instruction=self.system_prompt,
                         thinking_config=types.ThinkingConfig(thinking_level="low"),
-                        max_output_tokens=320,
+                        max_output_tokens=140,
                         tools=[types.Tool(google_search=types.GoogleSearch())],
                     ),
                 )
-                self._emit_advice(response.text or "", "Gemini", "direct")
+                self._emit_advice(
+                    limit_words(response.text or "", DIRECT_MAX_WORDS),
+                    "Gemini",
+                    "direct",
+                )
                 return
             except Exception as exc:
                 try:
                     text, ollama_model = self._request_ollama(prompt)
-                    self._emit_advice(text, f"Ollama · {ollama_model}", "direct")
+                    self._emit_advice(
+                        limit_words(text, DIRECT_MAX_WORDS),
+                        f"Ollama · {ollama_model}",
+                        "direct",
+                    )
                 except Exception as ollama_exc:
                     emit(
                         "error",
@@ -781,6 +853,7 @@ class CompanionService:
 
         if text.upper().startswith("[SEARCH]"):
             query = clean_text(text[len("[SEARCH]"):])
+            emit("trace", {"message": f"external verification requested: {query}"})
             if not query:
                 return
             threading.Thread(
@@ -796,6 +869,7 @@ class CompanionService:
             ).start()
             return
 
+        emit("trace", {"message": f"fast coach answered via {provider}"})
         self._emit_advice(
             text,
             provider,

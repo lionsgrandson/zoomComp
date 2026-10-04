@@ -26,5 +26,12 @@ jobs:
           node --check src/preload.cjs
           node --check src/renderer/app.js
           node --check src/renderer/audio-worklet.js
-      - name: Package Windows app
-        run: npm run pack
+      - name: Build Windows installer
+        run: npm run dist
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zoom-Companion-Windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

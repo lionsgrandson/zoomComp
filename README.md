@@ -1,79 +1,206 @@
 # Zoom Companion
 
-Windows-first desktop meeting copilot powered by Gemini Live. It listens to your microphone and Windows system audio, keeps a low-latency Gemini session open, and gives private spoken + on-screen coaching for sales calls, interviews, or general meetings.
+Zoom Companion now has two operating modes:
 
-## What it does
+1. **Recommended: local transcription mode**. Windows microphone + system audio are transcribed locally with faster-whisper. Only rolling transcript text is sent to Gemini periodically for coaching.
+2. **Legacy: Gemini Live Electron mode**. The original Electron app streams audio to Gemini Live.
 
-- Captures microphone + Windows system audio, so it can work with Zoom, Google Meet, Microsoft Teams, browser calls, and most other meeting software.
-- Streams 16 kHz PCM audio to `gemini-3.8-live`.
-- Uses a strict coaching prompt so the model stays quiet unless an intervention is useful.
-- Uses Gemini Google Search grounding when current/external information is needed, such as a product or competitor mentioned in the call.
-- Shows input transcription and Gemini's spoken response transcript.
-- Includes a local quota saver that buffers the start of speech, skips silence, and signals speech-end boundaries so silent meeting time is not continuously streamed to Gemini Live.
-- Plays Gemini's native audio response through your selected Windows output device/headphones.
-- Temporarily removes captured system audio from the Gemini input while Gemini is speaking to reduce self-feedback.
-- Supports Sales, Interview, and General modes plus editable factual context about you/business/pricing.
-- Supports private typed questions during the meeting.
-- Uses context-window compression and Gemini session resumption for long-running meetings.
-- Stores the Gemini API key locally using Electron `safeStorage`. The renderer never receives the key.
-- Does not save meeting audio or transcripts to disk.
+The local mode is the preferred path because it uses dramatically less Gemini quota and keeps raw meeting audio on the PC.
 
-## Requirements
+## Recommended local mode
 
-- Windows 10/11 x64 is the primary target.
-- Node.js 22+ for development.
-- A Gemini API key with access to the Gemini Live API.
-- Headphones are strongly recommended. System-loopback capture is automatically suppressed while the companion is speaking, but headphones provide the cleanest separation.
-- Permission/consent to process the meeting audio. Recording/AI-assistant rules vary by jurisdiction and organization.
+### What it does
 
-## Run locally
+- Captures the default Windows microphone.
+- Captures the default Windows speaker/headphone output through WASAPI loopback.
+- Transcribes both locally with faster-whisper.
+- Tags transcript as `[YOU]` and `[MEETING]`.
+- Sends only a rolling text window to Gemini when new transcript exists.
+- Checks for useful coaching roughly every 12 seconds by default.
+- Uses normal Gemini text generation with Google Search grounding when the model needs current external information.
+- Keeps transcribing locally even if a Gemini text request temporarily hits a quota/rate limit.
+- Lets you type a private question into the console and sends it immediately with recent meeting context.
+- Does not write meeting audio or transcripts to disk.
 
-```bash
+The default analysis model is `gemini-3.8-flash`. The default local transcription model is faster-whisper `small`.
+
+## Local-mode requirements
+
+- Windows 10/11.
+- Python 3.11+.
+- A Gemini API key.
+- Internet access for Gemini requests and for the first faster-whisper model download.
+- Permission/consent to process the meeting.
+
+## First-time setup
+
+From the repository:
+
+```bat
+setup-python.cmd
+```
+
+Or:
+
+```bat
+npm run setup:python
+```
+
+This creates a local `.venv` and installs:
+
+- faster-whisper
+- PyAudioWPatch for Windows WASAPI loopback
+- google-genai
+- numpy
+
+The first run also downloads the selected Whisper model if it is not already cached.
+
+## Add your private business context
+
+Copy:
+
+```
+context.example.txt
+```
+
+to:
+
+```
+context.txt
+```
+
+Then paste your real business/interview context into `context.txt`.
+
+`context.txt` is intentionally git-ignored so your private context is not committed to the public repository.
+
+## Start local companion
+
+Double-click:
+
+```
+run-local-companion.cmd
+```
+
+Or:
+
+```bat
+npm run local
+```
+
+If `GEMINI_API_KEY` is not already set in the environment, the script securely prompts for it in the console.
+
+While it is running:
+
+- Live transcript lines appear continuously.
+- Useful advice appears as `COACH: ...`.
+- Routine conversation produces no Gemini-visible advice.
+- Type a private question and press Enter to ask Gemini using the recent meeting context.
+- Press Ctrl+C to stop.
+
+## Configuration
+
+The local launcher defaults to:
+
+```bat
+python\companion.py --standalone --mode sales --interval 12
+```
+
+Available modes:
+
+- `sales`
+- `interview`
+- `general`
+
+Useful environment variables:
+
+- `GEMINI_API_KEY`
+- `ZOOM_COMPANION_MODEL`, default `gemini-3.8-flash`
+- `ZOOM_COMPANION_WHISPER_MODEL`, default `small`
+- `ZOOM_COMPANION_INTERVAL`, default `12`
+- `ZOOM_COMPANION_CONTEXT_FILE`, default `context.txt`
+
+Example:
+
+```bat
+set ZOOM_COMPANION_WHISPER_MODEL=base
+set ZOOM_COMPANION_INTERVAL=10
+run-local-companion.cmd
+```
+
+Use `base` if the CPU cannot keep up with `small`. Use `small` for better multilingual accuracy when performance is sufficient.
+
+## How quota usage changes
+
+The local mode does not send continuous audio to Gemini Live.
+
+Instead:
+
+```
+microphone + system audio
+        ↓
+local faster-whisper
+        ↓
+text transcript
+        ↓
+rolling transcript window
+        ↓
+Gemini text request every ~12 seconds when new speech exists
+        ↓
+short coaching response or [SILENT]
+```
+
+The rolling transcript sent on each automatic analysis is capped to roughly 6,500 characters. Private typed questions can use up to roughly 9,000 characters of recent transcript.
+
+## Local architecture
+
+- `python/companion.py`: Windows audio capture, resampling, local Whisper transcription, rolling transcript, Gemini text analysis, private questions.
+- `requirements-python.txt`: Python dependencies.
+- `setup-python.cmd`: creates the local virtual environment and installs dependencies.
+- `run-local-companion.cmd`: one-click local companion launcher.
+- `context.txt`: your private context, not committed.
+- `context.example.txt`: safe template.
+
+### Audio capture
+
+The script uses PyAudioWPatch/WASAPI:
+
+- default input device for your microphone
+- default WASAPI loopback device for what you hear through Windows
+
+The two streams are transcribed separately so the transcript can distinguish `YOU` from `MEETING`.
+
+## Legacy Electron / Gemini Live mode
+
+The original Electron application is still available:
+
+```bat
 npm install
 npm start
 ```
 
-On first launch:
+It includes:
 
-1. Paste your Gemini API key.
-2. Choose Sales, Interview, or General mode.
-3. Add factual context you want Gemini to know, such as your actual rates, stack, products, or interview background.
-4. Save settings.
-5. Confirm that you have permission to process the meeting audio.
-6. Click **Start companion**.
+- always-on-top UI
+- microphone + system-loopback capture
+- Gemini Live audio
+- typed private questions
+- live transcription
+- optional Gemini spoken responses
+- encrypted API-key storage through Electron `safeStorage`
 
-You can also set `GEMINI_API_KEY` in the environment instead of storing a key in the app.
+This mode consumes Gemini Live quota and is no longer the recommended default for long meetings.
 
-## Build a Windows installer
+## Build the Electron installer
 
-```bash
+```bat
 npm install
 npm run dist
 ```
 
-The NSIS installer is created under `dist/` by electron-builder.
+The NSIS installer is created under `dist/`.
 
-## Controls
+## Privacy
 
-- **Ctrl + Shift + Space**: start/stop from the keyboard.
-- **Compact**: turns the window into a small always-on-top coaching panel.
-- **Play coaching in my headphones**: disable this for text-only coaching.
-- **Ask privately**: sends a direct text question to the active Gemini session without saying it into the meeting.
+In local mode, raw meeting audio is processed by faster-whisper on the computer and is not intentionally written to disk. Gemini receives transcript text, the recent rolling transcript window, your configured context, and any private question you type.
 
-## Architecture
-
-- `src/main/main.js`: Electron lifecycle, secure IPC, media permissions, Windows loopback capture grant.
-- `src/main/gemini.js`: Gemini Live connection, proactive audio, Search grounding, transcription, compression, resumption/reconnect.
-- `src/main/settings.js`: local settings and OS-encrypted API key storage.
-- `src/main/prompts.js`: mode-specific coaching behavior.
-- `src/preload.cjs`: narrow context-bridge API; no Node access in the renderer.
-- `src/renderer/audio-worklet.js`: converts/resamples the mixed meeting audio to 16 kHz PCM in 40 ms chunks.
-- `src/renderer/app.js`: capture graph, playback queue, feedback suppression, UI state.
-
-## Security/privacy notes
-
-The Electron renderer runs with `contextIsolation`, `sandbox`, and `nodeIntegration: false`. The Gemini key stays in the main process and is encrypted at rest through the operating system when supported. Meeting audio is streamed to Gemini because that is necessary for live processing; review Google's Gemini API data terms for your account and intended use before using this with confidential meetings.
-
-## Known platform boundary
-
-The capture path is deliberately Windows-first because Electron supports `audio: 'loopback'` system-audio capture on Windows. The application can be extended for modern macOS system audio, but this initial version is not packaged or validated for macOS/Linux.
+Review your organization's policies and applicable recording/AI-assistant rules before using the companion in a real meeting.

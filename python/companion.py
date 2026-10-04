@@ -1,0 +1,442 @@
+from __future__ import annotations
+
+import json
+import queue
+import sys
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+import pyaudiowpatch as pyaudio
+from faster_whisper import WhisperModel
+from google import genai
+from google.genai import types
+
+
+TARGET_RATE = 16000
+READ_FRAMES = 1024
+TRANSCRIBE_CHUNK_SECONDS = 4.0
+TRANSCRIPT_WINDOW_CHARS = 6500
+ASK_WINDOW_CHARS = 9000
+SILENT_MARKER = "[SILENT]"
+
+
+def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
+    print(
+        json.dumps({"type": event_type, "payload": payload or {}}, ensure_ascii=False),
+        flush=True,
+    )
+
+
+def clean_text(value: str) -> str:
+    return " ".join((value or "").split()).strip()
+
+
+def pcm16_to_float_mono(raw: bytes, channels: int, source_rate: int) -> np.ndarray:
+    pcm = np.frombuffer(raw, dtype=np.int16)
+    if pcm.size == 0:
+        return np.empty(0, dtype=np.float32)
+
+    if channels > 1:
+        usable = pcm.size - (pcm.size % channels)
+        if usable <= 0:
+            return np.empty(0, dtype=np.float32)
+        pcm = pcm[:usable].reshape(-1, channels).mean(axis=1)
+
+    audio = pcm.astype(np.float32) / 32768.0
+    if source_rate == TARGET_RATE or audio.size < 2:
+        return audio
+
+    target_size = max(1, int(round(audio.size * TARGET_RATE / source_rate)))
+    source_x = np.arange(audio.size, dtype=np.float64)
+    target_x = np.linspace(0, audio.size - 1, target_size, dtype=np.float64)
+    return np.interp(target_x, source_x, audio).astype(np.float32)
+
+
+@dataclass
+class AudioChunk:
+    source: str
+    audio: np.ndarray
+    captured_at: float
+
+
+class CompanionService:
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.api_key = str(config.get("apiKey") or "").strip()
+        self.model_name = str(config.get("model") or "gemini-3.8-flash").strip()
+        self.whisper_model_name = str(config.get("whisperModel") or "small").strip()
+        self.system_prompt = str(config.get("systemPrompt") or "").strip()
+        self.analysis_interval = max(6.0, float(config.get("intervalSeconds") or 12))
+
+        self.stop_event = threading.Event()
+        self.audio_queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=12)
+        self.transcript_lock = threading.Lock()
+        self.transcript: deque[tuple[int, float, str, str]] = deque(maxlen=180)
+        self.next_sequence = 1
+        self.last_analyzed_sequence = 0
+        self.last_analysis_at = 0.0
+
+        self.api_lock = threading.Lock()
+        self.pa: pyaudio.PyAudio | None = None
+        self.streams: list[Any] = []
+        self.capture_threads: list[threading.Thread] = []
+        self.worker_threads: list[threading.Thread] = []
+
+        self.whisper: WhisperModel | None = None
+        self.client: genai.Client | None = None
+
+    def start(self) -> None:
+        if not self.api_key:
+            raise RuntimeError("Gemini API key is missing.")
+
+        emit("status", {"state": "connecting", "reason": "Loading local Whisper model…"})
+        self.client = genai.Client(api_key=self.api_key)
+
+        self.whisper = WhisperModel(
+            self.whisper_model_name,
+            device="cpu",
+            compute_type="int8",
+        )
+
+        emit("status", {"state": "connecting", "reason": "Opening microphone and Windows system audio…"})
+        self.pa = pyaudio.PyAudio()
+        opened = self._open_audio_sources()
+        if not opened:
+            raise RuntimeError(
+                "No usable audio source was found. Check the Windows microphone and speaker devices."
+            )
+
+        transcriber = threading.Thread(
+            target=self._transcription_loop,
+            name="local-transcriber",
+            daemon=True,
+        )
+        analyzer = threading.Thread(
+            target=self._analysis_loop,
+            name="gemini-analyzer",
+            daemon=True,
+        )
+        self.worker_threads.extend([transcriber, analyzer])
+        transcriber.start()
+        analyzer.start()
+
+        emit(
+            "status",
+            {
+                "state": "connected",
+                "reason": "Local Whisper is listening. Only transcript text is sent to Gemini.",
+            },
+        )
+
+    def _open_audio_sources(self) -> list[str]:
+        assert self.pa is not None
+        opened: list[str] = []
+
+        try:
+            mic = self.pa.get_default_input_device_info()
+            channels = max(1, min(2, int(mic.get("maxInputChannels") or 1)))
+            rate = int(mic.get("defaultSampleRate") or 48000)
+            stream = self.pa.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=rate,
+                input=True,
+                input_device_index=int(mic["index"]),
+                frames_per_buffer=READ_FRAMES,
+            )
+            self.streams.append(stream)
+            self._start_capture_thread("YOU", stream, channels, rate)
+            opened.append(f"mic: {mic.get('name', 'default microphone')}")
+        except Exception as exc:
+            emit("status", {"state": "connecting", "reason": f"Microphone unavailable: {exc}"})
+
+        try:
+            loopback = self.pa.get_default_wasapi_loopback()
+            channels = max(1, min(2, int(loopback.get("maxInputChannels") or 2)))
+            rate = int(loopback.get("defaultSampleRate") or 48000)
+            stream = self.pa.open(
+                format=pyaudio.paInt16,
+                channels=channels,
+                rate=rate,
+                input=True,
+                input_device_index=int(loopback["index"]),
+                frames_per_buffer=READ_FRAMES,
+            )
+            self.streams.append(stream)
+            self._start_capture_thread("MEETING", stream, channels, rate)
+            opened.append(f"system: {loopback.get('name', 'default speakers')}")
+        except Exception as exc:
+            emit("status", {"state": "connecting", "reason": f"System audio unavailable: {exc}"})
+
+        if opened:
+            emit("capture-info", {"text": "Listening locally to " + " + ".join(opened)})
+        return opened
+
+    def _start_capture_thread(self, source: str, stream: Any, channels: int, rate: int) -> None:
+        thread = threading.Thread(
+            target=self._capture_loop,
+            args=(source, stream, channels, rate),
+            name=f"capture-{source.lower()}",
+            daemon=True,
+        )
+        self.capture_threads.append(thread)
+        thread.start()
+
+    def _capture_loop(self, source: str, stream: Any, channels: int, rate: int) -> None:
+        target_frames = max(READ_FRAMES, int(rate * TRANSCRIBE_CHUNK_SECONDS))
+        parts: list[bytes] = []
+        frames = 0
+
+        while not self.stop_event.is_set():
+            try:
+                data = stream.read(READ_FRAMES, exception_on_overflow=False)
+            except Exception as exc:
+                if not self.stop_event.is_set():
+                    emit("error", {"message": f"{source} audio capture error: {exc}"})
+                return
+
+            parts.append(data)
+            frames += len(data) // (2 * channels)
+            if frames < target_frames:
+                continue
+
+            raw = b"".join(parts)
+            parts = []
+            frames = 0
+            audio = pcm16_to_float_mono(raw, channels, rate)
+            if audio.size == 0:
+                continue
+
+            rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
+            if rms < 0.0015:
+                continue
+
+            chunk = AudioChunk(source=source, audio=audio, captured_at=time.time())
+            try:
+                self.audio_queue.put_nowait(chunk)
+            except queue.Full:
+                try:
+                    self.audio_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.audio_queue.put_nowait(chunk)
+                except queue.Full:
+                    pass
+
+    def _transcription_loop(self) -> None:
+        assert self.whisper is not None
+
+        while not self.stop_event.is_set():
+            try:
+                chunk = self.audio_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            try:
+                segments, _info = self.whisper.transcribe(
+                    chunk.audio,
+                    beam_size=1,
+                    best_of=1,
+                    vad_filter=True,
+                    vad_parameters={"min_silence_duration_ms": 250},
+                    condition_on_previous_text=False,
+                    temperature=0.0,
+                )
+                pieces: list[str] = []
+                for segment in segments:
+                    text = clean_text(segment.text)
+                    if not text:
+                        continue
+                    if getattr(segment, "no_speech_prob", 0.0) > 0.85:
+                        continue
+                    pieces.append(text)
+
+                text = clean_text(" ".join(pieces))
+                if text:
+                    self._append_transcript(chunk.source, text, chunk.captured_at)
+            except Exception as exc:
+                emit("error", {"message": f"Local transcription error: {exc}"})
+
+    def _append_transcript(self, source: str, text: str, captured_at: float) -> None:
+        with self.transcript_lock:
+            sequence = self.next_sequence
+            self.next_sequence += 1
+            self.transcript.append((sequence, captured_at, source, text))
+
+        emit("input-transcript", {"text": f"[{source}] {text}", "source": source})
+
+    def _snapshot(self, max_chars: int) -> tuple[int, str]:
+        with self.transcript_lock:
+            rows = list(self.transcript)
+
+        if not rows:
+            return 0, ""
+
+        latest_sequence = rows[-1][0]
+        lines = [f"[{source}] {text}" for _seq, _ts, source, text in rows]
+        selected: list[str] = []
+        total = 0
+        for line in reversed(lines):
+            cost = len(line) + 1
+            if selected and total + cost > max_chars:
+                break
+            selected.append(line)
+            total += cost
+        selected.reverse()
+        return latest_sequence, "\n".join(selected)
+
+    def _analysis_loop(self) -> None:
+        while not self.stop_event.wait(1.0):
+            now = time.monotonic()
+            if now - self.last_analysis_at < self.analysis_interval:
+                continue
+
+            latest_sequence, transcript = self._snapshot(TRANSCRIPT_WINDOW_CHARS)
+            if not transcript or latest_sequence <= self.last_analyzed_sequence:
+                continue
+
+            self.last_analysis_at = now
+            self.last_analyzed_sequence = latest_sequence
+            self._request_advice(transcript, direct_question=None)
+
+    def _request_advice(self, transcript: str, direct_question: str | None) -> None:
+        assert self.client is not None
+
+        if direct_question:
+            prompt = (
+                "The user privately asked the following during an ongoing meeting:\n"
+                f"{direct_question}\n\n"
+                "Recent meeting transcript:\n"
+                f"{transcript}\n\n"
+                "Answer the user's private question directly. Keep the answer concise and immediately usable."
+            )
+        else:
+            prompt = (
+                "Review this recent rolling meeting transcript. Decide whether the user needs useful coaching RIGHT NOW. "
+                f"If no intervention is materially useful, output exactly {SILENT_MARKER}. "
+                "Do not summarize the meeting. If intervention is useful, give only the short advice the user needs next.\n\n"
+                "Recent transcript:\n"
+                f"{transcript}"
+            )
+
+        try:
+            with self.api_lock:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        tools=[types.Tool(google_search=types.GoogleSearch())],
+                        temperature=0.2,
+                        max_output_tokens=220,
+                    ),
+                )
+            text = clean_text(response.text or "")
+            if not text or text.upper() == SILENT_MARKER:
+                return
+            emit("output-transcript", {"text": text})
+            emit("generation-complete", {})
+        except Exception as exc:
+            message = str(exc)
+            lower = message.lower()
+            if "429" in lower or "quota" in lower or "resource_exhausted" in lower:
+                emit(
+                    "error",
+                    {
+                        "message": (
+                            "Gemini text quota/rate limit reached. Local transcription is still running; "
+                            "analysis will retry after more transcript arrives. "
+                            + message
+                        )
+                    },
+                )
+            else:
+                emit("error", {"message": f"Gemini analysis error: {message}"})
+
+    def ask(self, text: str) -> None:
+        question = clean_text(text)
+        if not question:
+            return
+        _sequence, transcript = self._snapshot(ASK_WINDOW_CHARS)
+        threading.Thread(
+            target=self._request_advice,
+            args=(transcript, question),
+            name="private-question",
+            daemon=True,
+        ).start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+        for stream in self.streams:
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        self.streams.clear()
+
+        if self.pa is not None:
+            try:
+                self.pa.terminate()
+            except Exception:
+                pass
+            self.pa = None
+
+        emit("status", {"state": "stopped"})
+
+
+def read_json_line(line: str) -> dict[str, Any] | None:
+    try:
+        value = json.loads(line)
+        return value if isinstance(value, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def main() -> int:
+    first_line = sys.stdin.readline()
+    if not first_line:
+        emit("error", {"message": "No startup configuration was received."})
+        return 2
+
+    command = read_json_line(first_line)
+    if not command or command.get("type") != "start":
+        emit("error", {"message": "Expected a start command on stdin."})
+        return 2
+
+    service = CompanionService(command)
+    try:
+        service.start()
+    except Exception as exc:
+        emit("error", {"message": str(exc)})
+        service.stop()
+        return 1
+
+    try:
+        for line in sys.stdin:
+            command = read_json_line(line)
+            if not command:
+                continue
+            command_type = command.get("type")
+            if command_type == "ask":
+                service.ask(str(command.get("text") or ""))
+            elif command_type == "stop":
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        service.stop()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

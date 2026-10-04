@@ -465,6 +465,14 @@ class CompanionService:
             provider = "Gemini"
         except Exception as exc:
             gemini_message = str(exc)
+            gemini_lower = gemini_message.lower()
+            if "429" in gemini_lower or "quota" in gemini_lower or "resource_exhausted" in gemini_lower:
+                self.api_backoff_seconds = min(
+                    300.0,
+                    max(30.0, self.api_backoff_seconds * 2.0),
+                )
+                self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
+
             try:
                 text, ollama_model = self._request_ollama(prompt)
                 provider = f"Ollama · {ollama_model}"
@@ -477,14 +485,6 @@ class CompanionService:
                     },
                 )
             except Exception as ollama_exc:
-                lower = gemini_message.lower()
-                if "429" in lower or "quota" in lower or "resource_exhausted" in lower:
-                    self.api_backoff_seconds = min(
-                        300.0,
-                        max(30.0, self.api_backoff_seconds * 2.0),
-                    )
-                    self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
-
                 emit(
                     "error",
                     {

@@ -1,0 +1,1 @@
+export const LOCAL_TRANSCRIPTION_SIDECAR = true;

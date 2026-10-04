@@ -25,7 +25,8 @@
 
     <section class="coach-card">
       <p class="label">Live coaching</p>
-      <div id="advice" class="advice">Useful suggestions will appear here. Gemini stays quiet when it has nothing worth adding.</div>
+      <div id="advice" class="advice">Useful suggestions will appear here when the meeting needs intervention.</div>
+      <p id="provider" class="muted">Provider: waiting</p>
     </section>
 
     <section class="live-area">
@@ -54,6 +55,31 @@
           <span>Gemini API key</span>
           <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Gemini API key" />
         </label>
+
+        <label>
+          <span>Hugging Face token (optional)</span>
+          <input id="hfToken" type="password" autocomplete="off" spellcheck="false" placeholder="HF token" />
+        </label>
+
+        <label>
+          <span>Whisper model</span>
+          <select id="whisperModel">
+            <option value="base">Base · faster</option>
+            <option value="small">Small · recommended</option>
+            <option value="medium">Medium · more accurate / heavier</option>
+            <option value="large-v3">Large v3 · most accurate / heavy</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Analyze every</span>
+          <select id="intervalSeconds">
+            <option value="8">8 seconds</option>
+            <option value="12">12 seconds</option>
+            <option value="20">20 seconds</option>
+            <option value="30">30 seconds</option>
+          </select>
+        </label>
       </div>
 
       <label>
@@ -62,9 +88,15 @@
       </label>
 
       <div class="toggles">
-        <label class="check"><input id="audioEnabled" type="checkbox" checked /> <span>Play coaching in my headphones</span></label>
+        <label class="check"><input id="audioEnabled" type="checkbox" checked /> <span>Read coaching aloud through Windows</span></label>
         <label class="check"><input id="alwaysOnTop" type="checkbox" checked /> <span>Keep this window on top</span></label>
+        <label class="check"><input id="ollamaEnabled" type="checkbox" checked /> <span>Use Ollama automatically if Gemini fails</span></label>
       </div>
+
+      <label>
+        <span>Preferred Ollama model (optional, blank = strongest installed model)</span>
+        <input id="ollamaModel" type="text" autocomplete="off" spellcheck="false" placeholder="Auto-select strongest installed model" />
+      </label>
 
       <button id="saveSettings" class="ghost" type="button">Save settings</button>
     </section>
@@ -75,7 +107,7 @@
     </label>
 
     <button id="startStop" class="primary" type="button">Start companion</button>
-    <p class="privacy">Meeting audio is streamed to Gemini for live processing. This app does not write meeting audio or transcripts to disk.</p>
+    <p class="privacy">Meeting audio is transcribed locally on this PC. Gemini receives rolling transcript text, not raw meeting audio. The app does not intentionally save meeting audio or transcripts to disk.</p>
   </main>
   <script src="./app.js"></script>
 </body>

@@ -1,0 +1,13 @@
+Paste your factual business/interview context here.
+
+This file is not sent anywhere by itself. In local companion mode it is included as text context in Gemini analysis requests.
+
+Recommended content:
+- Your services and technical stack
+- Real projects you have completed
+- Current pricing rules
+- Things Gemini must never claim
+- Sales positioning
+- Interview experience
+
+Create a local file named context.txt next to this file and put your real context there.

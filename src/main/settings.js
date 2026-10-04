@@ -11,7 +11,8 @@ const DEFAULTS = {
   whisperModel: 'small',
   intervalSeconds: 12,
   ollamaEnabled: true,
-  ollamaModel: ''
+  ollamaModel: '',
+  speechRate: 1.4
 };
 
 function normalizeModel(value) {
@@ -50,6 +51,7 @@ export function getPublicSettings() {
     intervalSeconds: Number(raw.intervalSeconds || DEFAULTS.intervalSeconds),
     ollamaEnabled: raw.ollamaEnabled !== false,
     ollamaModel: typeof raw.ollamaModel === 'string' ? raw.ollamaModel : '',
+    speechRate: Number(raw.speechRate || DEFAULTS.speechRate),
     hasApiKey: Boolean(process.env.GEMINI_API_KEY || raw.apiKeyEncrypted),
     hasHfToken: Boolean(process.env.HF_TOKEN || raw.hfTokenEncrypted)
   };
@@ -77,7 +79,10 @@ export function saveSettings(next = {}) {
       : raw.ollamaEnabled !== false,
     ollamaModel: typeof next.ollamaModel === 'string'
       ? next.ollamaModel.trim()
-      : (raw.ollamaModel || '')
+      : (raw.ollamaModel || ''),
+    speechRate: Number.isFinite(Number(next.speechRate))
+      ? Math.max(0.8, Math.min(2.0, Number(next.speechRate)))
+      : Number(raw.speechRate || DEFAULTS.speechRate)
   };
 
   if (typeof next.apiKey === 'string' && next.apiKey.trim()) {

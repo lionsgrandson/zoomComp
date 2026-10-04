@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; media-src 'self' blob:;" />
+  <title>Zoom Companion</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PRIVATE MEETING COPILOT</p>
+        <h1>Zoom Companion</h1>
+      </div>
+      <button id="compact" class="ghost small" type="button">Compact</button>
+    </header>
+
+    <section class="status-row" aria-live="polite">
+      <span id="statusDot" class="dot" data-state="idle"></span>
+      <span id="status">Ready</span>
+      <span class="shortcut">Ctrl + Shift + Space</span>
+    </section>
+
+    <section class="coach-card">
+      <p class="label">Live coaching</p>
+      <div id="advice" class="advice">Useful suggestions will appear here. Gemini stays quiet when it has nothing worth adding.</div>
+    </section>
+
+    <section class="live-area">
+      <p class="label">What it is hearing</p>
+      <div id="transcript" class="transcript">No transcript yet.</div>
+      <p id="captureInfo" class="muted">Audio capture is off.</p>
+    </section>
+
+    <form id="askForm" class="ask-row">
+      <input id="askInput" type="text" maxlength="500" autocomplete="off" placeholder="Ask privately during the meeting…" />
+      <button type="submit" class="secondary">Ask</button>
+    </form>
+
+    <section class="settings">
+      <div class="settings-grid">
+        <label>
+          <span>Mode</span>
+          <select id="mode">
+            <option value="sales">Sales</option>
+            <option value="interview">Interview</option>
+            <option value="general">General meeting</option>
+          </select>
+        </label>
+
+        <label>
+          <span>Gemini API key</span>
+          <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Gemini API key" />
+        </label>
+      </div>
+
+      <label>
+        <span>Context Gemini should know about you, your business, rates, products or interview background</span>
+        <textarea id="context" rows="5" maxlength="20000" placeholder="Optional. Put factual context here so the coach does not have to guess."></textarea>
+      </label>
+
+      <div class="toggles">
+        <label class="check"><input id="audioEnabled" type="checkbox" checked /> <span>Play coaching in my headphones</span></label>
+        <label class="check"><input id="alwaysOnTop" type="checkbox" checked /> <span>Keep this window on top</span></label>
+      </div>
+
+      <button id="saveSettings" class="ghost" type="button">Save settings</button>
+    </section>
+
+    <label class="consent check">
+      <input id="consent" type="checkbox" />
+      <span>I have permission to record/process this meeting audio and use an AI meeting assistant.</span>
+    </label>
+
+    <button id="startStop" class="primary" type="button">Start companion</button>
+    <p class="privacy">Meeting audio is streamed to Gemini for live processing. This app does not write meeting audio or transcripts to disk.</p>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

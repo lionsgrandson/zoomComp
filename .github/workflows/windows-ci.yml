@@ -1,0 +1,37 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Syntax checks
+        shell: pwsh
+        run: |
+          node --check src/main/main.js
+          node --check src/main/gemini.js
+          node --check src/main/settings.js
+          node --check src/main/prompts.js
+          node --check src/preload.cjs
+          node --check src/renderer/app.js
+          node --check src/renderer/audio-worklet.js
+      - name: Build Windows installer
+        run: npm run dist
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zoom-Companion-Windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

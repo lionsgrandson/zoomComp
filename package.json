@@ -1,0 +1,48 @@
+{
+  "name": "zoom-companion",
+  "version": "0.1.0",
+  "description": "Private real-time Gemini meeting copilot for sales, interviews and general meetings.",
+  "type": "module",
+  "main": "src/main/main.js",
+  "author": "Moshe Schwartzberg",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "pack": "electron-builder --dir --win --x64 --publish never",
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "dependencies": {
+    "@google/genai": "2.24.0"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.codecrafter.zoomcompanion",
+    "productName": "Zoom Companion",
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -23,7 +23,7 @@ from google.genai import types
 
 TARGET_RATE = 16000
 READ_FRAMES = 1024
-TRANSCRIBE_CHUNK_SECONDS = 4.0
+TRANSCRIBE_CHUNK_SECONDS = 3.0
 TRANSCRIPT_WINDOW_CHARS = 6500
 ASK_WINDOW_CHARS = 9000
 SILENT_MARKER = "[SILENT]"
@@ -91,7 +91,7 @@ class CompanionService:
         self.model_name = str(config.get("model") or "gemini-3.8-flash").strip()
         self.whisper_model_name = str(config.get("whisperModel") or "small").strip()
         self.system_prompt = str(config.get("systemPrompt") or "").strip()
-        self.analysis_interval = max(6.0, float(config.get("intervalSeconds") or 12))
+        self.analysis_interval = max(6.0, float(config.get("intervalSeconds") or 8))
         self.ollama_enabled = bool(config.get("ollamaEnabled", True))
         self.ollama_model = str(config.get("ollamaModel") or "").strip()
         self.ollama_url = str(config.get("ollamaUrl") or "http://127.0.0.1:11434").rstrip("/")
@@ -680,7 +680,7 @@ def standalone_main() -> int:
     parser.add_argument("--mode", choices=["sales", "interview", "general"], default="sales")
     parser.add_argument("--model", default=os.environ.get("ZOOM_COMPANION_MODEL", "gemini-3.8-flash"))
     parser.add_argument("--whisper-model", default=os.environ.get("ZOOM_COMPANION_WHISPER_MODEL", "small"))
-    parser.add_argument("--interval", type=float, default=float(os.environ.get("ZOOM_COMPANION_INTERVAL", "12")))
+    parser.add_argument("--interval", type=float, default=float(os.environ.get("ZOOM_COMPANION_INTERVAL", "8")))
     parser.add_argument("--context-file", default=os.environ.get("ZOOM_COMPANION_CONTEXT_FILE", "context.txt"))
     args = parser.parse_args()
 

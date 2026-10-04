@@ -1,0 +1,4 @@
+faster-whisper>=1.2,<2
+google-genai>=1,<2
+numpy>=1.26,<3
+PyAudioWPatch>=0.2.12,<0.3

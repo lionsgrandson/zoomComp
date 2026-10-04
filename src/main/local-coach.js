@@ -142,7 +142,7 @@ export class LocalCoach {
       apiKey: options.apiKey,
       model: options.model,
       whisperModel: options.whisperModel,
-      intervalSeconds: options.intervalSeconds,
+      intervalSeconds: options.intervalSeconds || 8,
       systemPrompt: options.systemPrompt,
       ollamaEnabled: options.ollamaEnabled,
       ollamaModel: options.ollamaModel

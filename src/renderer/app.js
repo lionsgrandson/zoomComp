@@ -36,6 +36,65 @@ let transcriptLines = [];
 let compact = false;
 let speakingRestoreTimer = null;
 
+const VAD_PRE_ROLL_CHUNKS = 6; // 240 ms
+const VAD_SILENCE_END_CHUNKS = 15; // 600 ms
+const VAD_MIN_SPEECH_RMS = 0.006;
+let vadPreRoll = [];
+let speechActive = false;
+let quietChunkCount = 0;
+let noiseFloor = 0.0015;
+
+function resetVadState() {
+  vadPreRoll = [];
+  speechActive = false;
+  quietChunkCount = 0;
+  noiseFloor = 0.0015;
+}
+
+function handleCapturedAudio(packet) {
+  const audio = packet?.audio;
+  const rms = Number(packet?.rms);
+
+  if (!running || !(audio instanceof ArrayBuffer)) return;
+
+  const level = Number.isFinite(rms) ? rms : 1;
+  const startThreshold = Math.max(VAD_MIN_SPEECH_RMS, noiseFloor * 3);
+  const continueThreshold = Math.max(VAD_MIN_SPEECH_RMS * 0.65, noiseFloor * 1.8);
+
+  if (!speechActive) {
+    noiseFloor = Math.max(
+      0.0005,
+      Math.min(0.03, (noiseFloor * 0.97) + (Math.min(level, 0.03) * 0.03))
+    );
+
+    vadPreRoll.push(audio);
+    if (vadPreRoll.length > VAD_PRE_ROLL_CHUNKS) vadPreRoll.shift();
+
+    if (level >= startThreshold) {
+      speechActive = true;
+      quietChunkCount = 0;
+      for (const chunk of vadPreRoll) window.zoomComp.sendAudio(chunk);
+      vadPreRoll = [];
+    }
+    return;
+  }
+
+  window.zoomComp.sendAudio(audio);
+
+  if (level < continueThreshold) {
+    quietChunkCount += 1;
+  } else {
+    quietChunkCount = 0;
+  }
+
+  if (quietChunkCount >= VAD_SILENCE_END_CHUNKS) {
+    speechActive = false;
+    quietChunkCount = 0;
+    vadPreRoll = [];
+    window.zoomComp.endAudioStream();
+  }
+}
+
 function setStatus(state, detail = '') {
   const labels = {
     idle: 'Ready',
@@ -65,7 +124,7 @@ function setSystemAudioSuppressed(suppressed) {
   systemGain.gain.setTargetAtTime(suppressed ? 0 : 0.9, now, 0.015);
   ui.captureInfo.textContent = suppressed
     ? 'Listening to mic; system audio temporarily suppressed while the coach speaks.'
-    : 'Listening to microphone + Windows system audio.';
+    : 'Listening to microphone + Windows system audio. Quota saver sends speech only.';
 }
 
 function clearPlayback() {
@@ -150,8 +209,9 @@ async function createCapture() {
     numberOfOutputs: 1,
     outputChannelCount: [1]
   });
+  resetVadState();
   workletNode.port.onmessage = (event) => {
-    if (running && event.data instanceof ArrayBuffer) window.zoomComp.sendAudio(event.data);
+    handleCapturedAudio(event.data);
   };
 
   silentGain = audioContext.createGain();
@@ -171,7 +231,7 @@ async function createCapture() {
     systemGain.gain.value = 0.9;
     systemSource.connect(systemGain).connect(workletNode);
     for (const track of displayStream.getVideoTracks()) track.enabled = false;
-    ui.captureInfo.textContent = 'Listening to microphone + Windows system audio.';
+    ui.captureInfo.textContent = 'Listening to microphone + Windows system audio. Quota saver sends speech only.';
   } else {
     ui.captureInfo.textContent = displayError
       ? `Microphone only. System audio capture failed: ${displayError.message}`
@@ -193,6 +253,7 @@ async function stopCapture() {
   clearPlayback();
   try { await playbackContext?.close(); } catch {}
   playbackContext = null;
+  resetVadState();
   ui.captureInfo.textContent = 'Audio capture is off.';
 }
 

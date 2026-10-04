@@ -3,12 +3,8 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { app } from 'electron';
 
-function findPython() {
-  const local = path.join(app.getAppPath(), '.venv', 'Scripts', 'python.exe');
-  const candidates = fs.existsSync(local)
-    ? [[local, []], ['python', []], ['py', ['-3']]]
-    : [['python', []], ['py', ['-3']]];
-
+function systemPython() {
+  const candidates = [['python', []], ['py', ['-3']]];
   for (const [command, prefix] of candidates) {
     const result = spawnSync(command, [...prefix, '-c', 'import sys'], {
       windowsHide: true,
@@ -19,6 +15,34 @@ function findPython() {
   return null;
 }
 
+function resourcePath(...parts) {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, ...parts)
+    : path.join(app.getAppPath(), ...parts);
+}
+
+function run(command, args, onLine) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const handle = (chunk) => {
+      const line = String(chunk || '').trim();
+      if (line) onLine?.(line);
+    };
+    child.stdout.on('data', handle);
+    child.stderr.on('data', handle);
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Process exited with code ${code}.`));
+    });
+  });
+}
+
 export class LocalCoach {
   constructor(emit) {
     this.emit = emit;
@@ -27,20 +51,52 @@ export class LocalCoach {
     this.connected = false;
   }
 
-  async connect(options) {
-    const python = findPython();
-    if (!python) throw new Error('Python 3 was not found. Run setup-python.cmd first.');
+  async #ensurePythonEnvironment() {
+    const basePython = systemPython();
+    if (!basePython) {
+      throw new Error('Python 3.11+ was not found. Install Python, then start Zoom Companion again.');
+    }
 
-    const script = path.join(app.getAppPath(), 'python', 'companion.py');
+    const envDir = path.join(app.getPath('userData'), 'python-env');
+    const envPython = path.join(envDir, 'Scripts', 'python.exe');
+    const requirements = resourcePath('requirements-python.txt');
+
+    if (!fs.existsSync(envPython)) {
+      this.emit('status', { state: 'connecting', reason: 'Creating local Python environment…' });
+      await run(basePython.command, [...basePython.prefix, '-m', 'venv', envDir]);
+    }
+
+    const importCheck = spawnSync(
+      envPython,
+      ['-c', 'import numpy, pyaudiowpatch, faster_whisper; from google import genai'],
+      { windowsHide: true, stdio: 'ignore' }
+    );
+
+    if (importCheck.status !== 0) {
+      this.emit('status', { state: 'connecting', reason: 'Installing local transcription dependencies…' });
+      await run(
+        envPython,
+        ['-m', 'pip', 'install', '-r', requirements],
+        (line) => this.emit('setup-progress', { message: line })
+      );
+    }
+
+    return envPython;
+  }
+
+  async connect(options) {
+    const python = await this.#ensurePythonEnvironment();
+    const script = resourcePath('python', 'companion.py');
     if (!fs.existsSync(script)) throw new Error('python/companion.py is missing.');
 
-    this.child = spawn(python.command, [...python.prefix, script], {
-      cwd: app.getAppPath(),
+    this.child = spawn(python, [script], {
+      cwd: app.getPath('userData'),
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        HF_TOKEN: options.hfToken || process.env.HF_TOKEN || ''
+        HF_TOKEN: options.hfToken || process.env.HF_TOKEN || '',
+        PYTHONUTF8: '1'
       }
     });
 

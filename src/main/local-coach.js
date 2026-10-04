@@ -181,6 +181,14 @@ export class LocalCoach {
     return this.#send({ type: 'ask', text });
   }
 
+  setPaused(paused) {
+    return this.#send({ type: paused ? 'pause' : 'resume' });
+  }
+
+  setOutputSpeaking(speaking) {
+    return this.#send({ type: 'output-speaking', speaking: Boolean(speaking) });
+  }
+
   stop() {
     const child = this.child;
     this.connected = false;

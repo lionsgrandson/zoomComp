@@ -375,7 +375,7 @@ ui.askForm.addEventListener('submit', async (event) => {
     ui.ollamaEnabled.checked = settings.ollamaEnabled !== false;
     ui.ollamaModel.value = settings.ollamaModel || '';
     ui.whisperModel.value = settings.whisperModel || 'small';
-    ui.intervalSeconds.value = String(settings.intervalSeconds || 12);
+    ui.intervalSeconds.value = String(settings.intervalSeconds || 8);
     ui.speechRate.value = String(settings.speechRate || 1.4);
 
     ui.apiKey.placeholder = settings.hasApiKey

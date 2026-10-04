@@ -11,9 +11,11 @@ const ui = {
   ollamaModel: $('ollamaModel'),
   whisperModel: $('whisperModel'),
   intervalSeconds: $('intervalSeconds'),
+  speechRate: $('speechRate'),
   consent: $('consent'),
   save: $('saveSettings'),
   start: $('startStop'),
+  pause: $('pauseResume'),
   status: $('status'),
   statusDot: $('statusDot'),
   advice: $('advice'),
@@ -26,14 +28,21 @@ const ui = {
 };
 
 let running = false;
+let paused = false;
 let compact = false;
 let transcriptLines = [];
+let speechQueue = [];
+let speechActive = false;
+let currentUtterance = null;
+let lastSpeechFingerprint = '';
+let lastSpeechAt = 0;
 
 function setStatus(state, detail = '') {
   const labels = {
     idle: 'Ready',
     connecting: 'Starting local companion…',
     connected: 'Listening locally',
+    paused: 'Paused',
     reconnecting: 'Reconnecting…',
     stopped: 'Stopped',
     error: 'Error'
@@ -62,17 +71,84 @@ function preferredVoice(text) {
     || voices[0];
 }
 
-function speakAdvice(text) {
-  if (!ui.audioEnabled.checked || !text?.trim() || !('speechSynthesis' in window)) return;
-  speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text.trim());
+function speechFingerprint(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0590-\u05ff]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function signalOutputSpeaking(speaking) {
+  window.zoomComp.setOutputSpeaking(Boolean(speaking)).catch(() => {});
+}
+
+function finishCurrentSpeech() {
+  speechActive = false;
+  currentUtterance = null;
+  signalOutputSpeaking(false);
+  setTimeout(processSpeechQueue, 80);
+}
+
+function processSpeechQueue() {
+  if (
+    speechActive ||
+    paused ||
+    !running ||
+    !ui.audioEnabled.checked ||
+    !('speechSynthesis' in window) ||
+    speechQueue.length === 0
+  ) return;
+
+  const text = speechQueue.shift();
+  const utterance = new SpeechSynthesisUtterance(text);
   const voice = preferredVoice(text);
+
   if (voice) {
     utterance.voice = voice;
     utterance.lang = voice.lang;
   }
-  utterance.rate = 1.05;
+
+  utterance.rate = Number(ui.speechRate.value) || 1.4;
+  utterance.pitch = 1.0;
+  utterance.volume = 1.0;
+  utterance.onstart = () => signalOutputSpeaking(true);
+  utterance.onend = finishCurrentSpeech;
+  utterance.onerror = finishCurrentSpeech;
+
+  speechActive = true;
+  currentUtterance = utterance;
   speechSynthesis.speak(utterance);
+}
+
+function speakAdvice(text) {
+  if (!ui.audioEnabled.checked || !text?.trim() || !('speechSynthesis' in window)) return;
+
+  const clean = text.trim();
+  const fingerprint = speechFingerprint(clean);
+  const now = Date.now();
+
+  if (fingerprint && fingerprint === lastSpeechFingerprint && now - lastSpeechAt < 90000) {
+    return;
+  }
+
+  lastSpeechFingerprint = fingerprint;
+  lastSpeechAt = now;
+
+  // Do not build a stale backlog. If one answer is already speaking,
+  // keep only the newest pending answer.
+  if (speechActive) speechQueue = [clean];
+  else speechQueue.push(clean);
+
+  processSpeechQueue();
+}
+
+function clearSpeech() {
+  speechQueue = [];
+  speechActive = false;
+  currentUtterance = null;
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  signalOutputSpeaking(false);
 }
 
 async function saveSettings() {
@@ -87,6 +163,7 @@ async function saveSettings() {
       alwaysOnTop: ui.alwaysOnTop.checked,
       whisperModel: ui.whisperModel.value,
       intervalSeconds: Number(ui.intervalSeconds.value),
+      speechRate: Number(ui.speechRate.value),
       ollamaEnabled: ui.ollamaEnabled.checked,
       ollamaModel: ui.ollamaModel.value
     });
@@ -126,11 +203,16 @@ async function start() {
     await saveSettings();
     await window.zoomComp.start();
     running = true;
+    paused = false;
+    ui.pause.disabled = false;
+    ui.pause.textContent = 'Pause';
     ui.start.textContent = 'Stop companion';
     ui.start.classList.add('danger');
     setStatus('connected');
   } catch (error) {
     running = false;
+    paused = false;
+    ui.pause.disabled = true;
     try { await window.zoomComp.stop(); } catch {}
     setStatus('error', error.message);
   } finally {
@@ -141,8 +223,11 @@ async function start() {
 async function stop() {
   ui.start.disabled = true;
   running = false;
+  paused = false;
+  ui.pause.disabled = true;
+  ui.pause.textContent = 'Pause';
   try {
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    clearSpeech();
     await window.zoomComp.stop();
     setStatus('stopped');
     ui.captureInfo.textContent = 'Local transcription is off.';
@@ -159,11 +244,46 @@ async function toggleRunning() {
   else await start();
 }
 
+async function togglePause() {
+  if (!running) return;
+
+  const nextPaused = !paused;
+  const result = await window.zoomComp.pause(nextPaused);
+  if (!result?.ok) {
+    setStatus('error', 'The local companion is not ready to pause.');
+    return;
+  }
+
+  paused = nextPaused;
+  ui.pause.textContent = paused ? 'Resume' : 'Pause';
+
+  if ('speechSynthesis' in window) {
+    if (paused) speechSynthesis.pause();
+    else speechSynthesis.resume();
+  }
+
+  if (paused) {
+    setStatus('paused', 'Listening and analysis paused.');
+    ui.captureInfo.textContent = 'Paused. No meeting audio is being processed.';
+  } else {
+    setStatus('connected', 'Listening locally');
+    processSpeechQueue();
+  }
+}
+
 window.zoomComp.onEvent(({ type, payload }) => {
   switch (type) {
     case 'status':
       setStatus(payload.state, payload.reason || '');
-      if (payload.state === 'connected') running = true;
+      if (payload.state === 'connected') {
+        running = true;
+        paused = false;
+        ui.pause.disabled = false;
+        ui.pause.textContent = 'Pause';
+      } else if (payload.state === 'paused') {
+        paused = true;
+        ui.pause.textContent = 'Resume';
+      }
       break;
 
     case 'capture-info':
@@ -215,13 +335,17 @@ ui.save.addEventListener('click', () => {
 });
 
 ui.start.addEventListener('click', toggleRunning);
+ui.pause.addEventListener('click', () => {
+  togglePause().catch((error) => setStatus('error', error.message));
+});
 
 ui.alwaysOnTop.addEventListener('change', () => {
   window.zoomComp.setAlwaysOnTop(ui.alwaysOnTop.checked);
 });
 
 ui.audioEnabled.addEventListener('change', () => {
-  if (!ui.audioEnabled.checked && 'speechSynthesis' in window) speechSynthesis.cancel();
+  if (!ui.audioEnabled.checked) clearSpeech();
+  else processSpeechQueue();
 });
 
 ui.compact.addEventListener('click', async () => {
@@ -252,6 +376,7 @@ ui.askForm.addEventListener('submit', async (event) => {
     ui.ollamaModel.value = settings.ollamaModel || '';
     ui.whisperModel.value = settings.whisperModel || 'small';
     ui.intervalSeconds.value = String(settings.intervalSeconds || 12);
+    ui.speechRate.value = String(settings.speechRate || 1.4);
 
     ui.apiKey.placeholder = settings.hasApiKey
       ? 'Saved securely ••••••••'

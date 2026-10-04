@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+import ctranslate2
 import numpy as np
 import pyaudiowpatch as pyaudio
 from faster_whisper import WhisperModel
@@ -148,11 +149,55 @@ class CompanionService:
         emit("status", {"state": "connecting", "reason": "Loading local Whisper model…"})
         self.client = genai.Client(api_key=self.api_key)
 
-        self.whisper = WhisperModel(
-            self.whisper_model_name,
-            device="cpu",
-            compute_type="int8",
-        )
+        cuda_devices = 0
+        try:
+            cuda_devices = int(ctranslate2.get_cuda_device_count())
+        except Exception:
+            cuda_devices = 0
+
+        if cuda_devices > 0:
+            emit(
+                "trace",
+                {
+                    "message": (
+                        f"Whisper using CUDA GPU with model {self.whisper_model_name}"
+                    )
+                },
+            )
+            try:
+                self.whisper = WhisperModel(
+                    self.whisper_model_name,
+                    device="cuda",
+                    compute_type="float16",
+                )
+            except Exception as exc:
+                emit(
+                    "trace",
+                    {
+                        "message": (
+                            f"CUDA Whisper initialization failed, falling back to CPU: {exc}"
+                        )
+                    },
+                )
+                self.whisper = WhisperModel(
+                    self.whisper_model_name,
+                    device="cpu",
+                    compute_type="int8",
+                )
+        else:
+            emit(
+                "trace",
+                {
+                    "message": (
+                        f"Whisper using CPU int8 with model {self.whisper_model_name}"
+                    )
+                },
+            )
+            self.whisper = WhisperModel(
+                self.whisper_model_name,
+                device="cpu",
+                compute_type="int8",
+            )
 
         emit("status", {"state": "connecting", "reason": "Opening microphone and Windows system audio…"})
         self.pa = pyaudio.PyAudio()

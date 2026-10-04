@@ -142,8 +142,8 @@ export class LocalCoach {
       apiKey: options.apiKey,
       model: options.model,
       autoModel: options.autoModel || 'gemini-3.5-flash-lite',
-      whisperModel: options.whisperModel,
-      intervalSeconds: options.intervalSeconds || 4,
+      whisperModel: options.whisperModel || 'base',
+      intervalSeconds: options.intervalSeconds || 2,
       systemPrompt: options.systemPrompt,
       ollamaEnabled: options.ollamaEnabled,
       ollamaModel: options.ollamaModel

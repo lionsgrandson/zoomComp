@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import getpass
 import json
+import os
 import queue
 import sys
 import threading
@@ -22,11 +25,28 @@ TRANSCRIBE_CHUNK_SECONDS = 4.0
 TRANSCRIPT_WINDOW_CHARS = 6500
 ASK_WINDOW_CHARS = 9000
 SILENT_MARKER = "[SILENT]"
+HUMAN_OUTPUT = False
 
 
 def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
+    payload = payload or {}
+    if HUMAN_OUTPUT:
+        if event_type == "input-transcript":
+            print(payload.get("text", ""), flush=True)
+        elif event_type == "output-transcript":
+            print("\\nCOACH: " + str(payload.get("text", "")) + "\\n", flush=True)
+        elif event_type == "capture-info":
+            print("AUDIO: " + str(payload.get("text", "")), flush=True)
+        elif event_type == "status":
+            state = str(payload.get("state", "")).upper()
+            reason = str(payload.get("reason", "")).strip()
+            print(f"{state}: {reason}".rstrip(), flush=True)
+        elif event_type == "error":
+            print("ERROR: " + str(payload.get("message", "")), file=sys.stderr, flush=True)
+        return
+
     print(
-        json.dumps({"type": event_type, "payload": payload or {}}, ensure_ascii=False),
+        json.dumps({"type": event_type, "payload": payload}, ensure_ascii=False),
         flush=True,
     )
 
@@ -393,6 +413,98 @@ class CompanionService:
         emit("status", {"state": "stopped"})
 
 
+def build_standalone_system_prompt(mode: str, context: str) -> str:
+    base = """You are Zoom Companion, a private meeting coach for the user. You receive a rolling transcript tagged [YOU] and [MEETING].
+
+Only intervene when the user would materially benefit from help. Do not narrate or summarize routine conversation. When useful, give a concise answer or next move that can be used immediately, usually under 55 words.
+
+Be factual. Never invent the user's experience, capabilities, pricing, customers, credentials, or project history. If a named product, company, framework, standard, competitor, current fact, or unfamiliar system matters, use Google Search when verification would improve accuracy. Clearly distinguish verified facts from estimates or assumptions. Match Hebrew or English to the conversation when practical."""
+
+    modes = {
+        "sales": """Act as a senior technical-sales copilot. Help with discovery, objections, feasibility, architecture, integrations, scope, pricing conversations, next-step questions, and closing. Prefer one strong next question over a long explanation.""",
+        "interview": """Act as a private interview copilot. Give concise, truthful answer structures the user can adapt immediately. Never fabricate experience. Bridge honestly from adjacent experience when needed.""",
+        "general": """Act as a high-signal meeting copilot. Surface facts, risks, action items, definitions, and useful follow-up questions only when they materially improve the user's next move.""",
+    }
+
+    prompt = base + "\n\n" + modes.get(mode, modes["general"])
+    context = context.strip()
+    if context:
+        prompt += "\n\nUSER CONTEXT, TREAT AS AUTHORITATIVE UNLESS THE LIVE CONVERSATION CONTRADICTS IT:\n" + context
+    return prompt
+
+
+def standalone_main() -> int:
+    global HUMAN_OUTPUT
+    HUMAN_OUTPUT = True
+
+    parser = argparse.ArgumentParser(description="Local Whisper + Gemini text meeting companion")
+    parser.add_argument("--mode", choices=["sales", "interview", "general"], default="sales")
+    parser.add_argument("--model", default=os.environ.get("ZOOM_COMPANION_MODEL", "gemini-3.8-flash"))
+    parser.add_argument("--whisper-model", default=os.environ.get("ZOOM_COMPANION_WHISPER_MODEL", "small"))
+    parser.add_argument("--interval", type=float, default=float(os.environ.get("ZOOM_COMPANION_INTERVAL", "12")))
+    parser.add_argument("--context-file", default=os.environ.get("ZOOM_COMPANION_CONTEXT_FILE", "context.txt"))
+    args = parser.parse_args()
+
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        api_key = getpass.getpass("Gemini API key: ").strip()
+    if not api_key:
+        print("Gemini API key is required.", file=sys.stderr)
+        return 2
+
+    context = ""
+    if args.context_file and os.path.exists(args.context_file):
+        with open(args.context_file, "r", encoding="utf-8") as handle:
+            context = handle.read()
+
+    service = CompanionService(
+        {
+            "apiKey": api_key,
+            "model": args.model,
+            "whisperModel": args.whisper_model,
+            "intervalSeconds": args.interval,
+            "systemPrompt": build_standalone_system_prompt(args.mode, context),
+        }
+    )
+
+    try:
+        service.start()
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        try:
+            service.stop()
+        except Exception:
+            pass
+        return 1
+
+    print(
+        "\nLocal mode is running. Audio is transcribed on this PC. "
+        "Only transcript text is sent to Gemini.\n"
+        "Type a private question and press Enter at any time. Press Ctrl+C to stop.\n",
+        flush=True,
+    )
+
+    def question_loop() -> None:
+        try:
+            for line in sys.stdin:
+                question = line.strip()
+                if question:
+                    service.ask(question)
+        except Exception:
+            pass
+
+    threading.Thread(target=question_loop, name="console-questions", daemon=True).start()
+
+    try:
+        while not service.stop_event.wait(0.5):
+            pass
+    except KeyboardInterrupt:
+        pass
+    finally:
+        service.stop()
+    return 0
+
+
 def read_json_line(line: str) -> dict[str, Any] | None:
     try:
         value = json.loads(line)
@@ -402,6 +514,10 @@ def read_json_line(line: str) -> dict[str, Any] | None:
 
 
 def main() -> int:
+    if "--standalone" in sys.argv:
+        sys.argv.remove("--standalone")
+        return standalone_main()
+
     first_line = sys.stdin.readline()
     if not first_line:
         emit("error", {"message": "No startup configuration was received."})

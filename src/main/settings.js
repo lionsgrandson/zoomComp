@@ -9,8 +9,8 @@ const DEFAULTS = {
   alwaysOnTop: true,
   model: 'gemini-3.8-flash',
   autoModel: 'gemini-3.5-flash-lite',
-  whisperModel: 'small',
-  intervalSeconds: 4,
+  whisperModel: 'base',
+  intervalSeconds: 2,
   ollamaEnabled: true,
   ollamaModel: '',
   speechRate: 1.4
@@ -24,11 +24,18 @@ function normalizeModel(value) {
 
 function normalizedInterval(raw) {
   const current = Number(raw.intervalSeconds || DEFAULTS.intervalSeconds);
-  if (!raw.realtimeProfileVersion) {
-    if (current === 12 || current === 8) return 4;
-  }
-  if (Number(raw.realtimeProfileVersion || 0) < 2 && current === 8) return 4;
-  return Math.max(3, Math.min(60, current));
+  const version = Number(raw.realtimeProfileVersion || 0);
+  if (version < 3 && [12, 8, 4, 3].includes(current)) return 2;
+  return Math.max(1.5, Math.min(60, current));
+}
+
+function normalizedWhisperModel(raw) {
+  const model = typeof raw.whisperModel === 'string' && raw.whisperModel.trim()
+    ? raw.whisperModel.trim()
+    : DEFAULTS.whisperModel;
+  const version = Number(raw.realtimeProfileVersion || 0);
+  if (version < 3 && model === 'small') return 'base';
+  return model;
 }
 
 function filePath() {
@@ -60,7 +67,7 @@ export function getPublicSettings() {
     autoModel: typeof raw.autoModel === 'string' && raw.autoModel.trim()
       ? raw.autoModel.trim()
       : DEFAULTS.autoModel,
-    whisperModel: raw.whisperModel || DEFAULTS.whisperModel,
+    whisperModel: normalizedWhisperModel(raw),
     intervalSeconds: normalizedInterval(raw),
     ollamaEnabled: raw.ollamaEnabled !== false,
     ollamaModel: typeof raw.ollamaModel === 'string' ? raw.ollamaModel : '',
@@ -88,7 +95,7 @@ export function saveSettings(next = {}) {
       ? next.whisperModel.trim()
       : (raw.whisperModel || DEFAULTS.whisperModel),
     intervalSeconds: Number.isFinite(Number(next.intervalSeconds))
-      ? Math.max(3, Math.min(60, Number(next.intervalSeconds)))
+      ? Math.max(1.5, Math.min(60, Number(next.intervalSeconds)))
       : Number(raw.intervalSeconds || DEFAULTS.intervalSeconds),
     ollamaEnabled: typeof next.ollamaEnabled === 'boolean'
       ? next.ollamaEnabled
@@ -99,7 +106,7 @@ export function saveSettings(next = {}) {
     speechRate: Number.isFinite(Number(next.speechRate))
       ? Math.max(0.8, Math.min(2.0, Number(next.speechRate)))
       : Number(raw.speechRate || DEFAULTS.speechRate),
-    realtimeProfileVersion: 2
+    realtimeProfileVersion: 3
   };
 
   if (typeof next.apiKey === 'string' && next.apiKey.trim()) {

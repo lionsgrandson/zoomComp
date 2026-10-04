@@ -9,6 +9,7 @@ Windows-first desktop meeting copilot powered by Gemini Live. It listens to your
 - Uses a strict coaching prompt so the model stays quiet unless an intervention is useful.
 - Uses Gemini Google Search grounding when current/external information is needed, such as a product or competitor mentioned in the call.
 - Shows input transcription and Gemini's spoken response transcript.
+- Includes a local quota saver that buffers the start of speech, skips silence, and signals speech-end boundaries so silent meeting time is not continuously streamed to Gemini Live.
 - Plays Gemini's native audio response through your selected Windows output device/headphones.
 - Temporarily removes captured system audio from the Gemini input while Gemini is speaking to reduce self-feedback.
 - Supports Sales, Interview, and General modes plus editable factual context about you/business/pricing.

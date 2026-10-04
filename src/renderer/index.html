@@ -80,6 +80,17 @@
             <option value="30">30 seconds</option>
           </select>
         </label>
+
+        <label>
+          <span>Voice speed</span>
+          <select id="speechRate">
+            <option value="1.0">1.0x</option>
+            <option value="1.2">1.2x</option>
+            <option value="1.4">1.4x · recommended</option>
+            <option value="1.6">1.6x</option>
+            <option value="1.8">1.8x</option>
+          </select>
+        </label>
       </div>
 
       <label>
@@ -106,7 +117,10 @@
       <span>I have permission to record/process this meeting audio and use an AI meeting assistant.</span>
     </label>
 
-    <button id="startStop" class="primary" type="button">Start companion</button>
+    <div class="run-controls">
+      <button id="startStop" class="primary" type="button">Start companion</button>
+      <button id="pauseResume" class="secondary" type="button" disabled>Pause</button>
+    </div>
     <p class="privacy">Meeting audio is transcribed locally on this PC. Gemini receives rolling transcript text, not raw meeting audio. The app does not intentionally save meeting audio or transcripts to disk.</p>
   </main>
   <script src="./app.js"></script>

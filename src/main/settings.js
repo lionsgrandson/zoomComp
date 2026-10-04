@@ -7,7 +7,11 @@ const DEFAULTS = {
   context: '',
   audioEnabled: true,
   alwaysOnTop: true,
-  model: 'gemini-3.8-live'
+  model: 'gemini-3.8-flash',
+  whisperModel: 'small',
+  intervalSeconds: 12,
+  ollamaEnabled: true,
+  ollamaModel: ''
 };
 
 function filePath() {
@@ -36,7 +40,12 @@ export function getPublicSettings() {
     audioEnabled: raw.audioEnabled !== false,
     alwaysOnTop: raw.alwaysOnTop !== false,
     model: raw.model || DEFAULTS.model,
-    hasApiKey: Boolean(process.env.GEMINI_API_KEY || raw.apiKeyEncrypted)
+    whisperModel: raw.whisperModel || DEFAULTS.whisperModel,
+    intervalSeconds: Number(raw.intervalSeconds || DEFAULTS.intervalSeconds),
+    ollamaEnabled: raw.ollamaEnabled !== false,
+    ollamaModel: typeof raw.ollamaModel === 'string' ? raw.ollamaModel : '',
+    hasApiKey: Boolean(process.env.GEMINI_API_KEY || raw.apiKeyEncrypted),
+    hasHfToken: Boolean(process.env.HF_TOKEN || raw.hfTokenEncrypted)
   };
 }
 
@@ -48,7 +57,19 @@ export function saveSettings(next = {}) {
     context: typeof next.context === 'string' ? next.context.slice(0, 20000) : (raw.context || ''),
     audioEnabled: typeof next.audioEnabled === 'boolean' ? next.audioEnabled : raw.audioEnabled !== false,
     alwaysOnTop: typeof next.alwaysOnTop === 'boolean' ? next.alwaysOnTop : raw.alwaysOnTop !== false,
-    model: typeof next.model === 'string' && next.model.trim() ? next.model.trim() : (raw.model || DEFAULTS.model)
+    model: typeof next.model === 'string' && next.model.trim() ? next.model.trim() : (raw.model || DEFAULTS.model),
+    whisperModel: typeof next.whisperModel === 'string' && next.whisperModel.trim()
+      ? next.whisperModel.trim()
+      : (raw.whisperModel || DEFAULTS.whisperModel),
+    intervalSeconds: Number.isFinite(Number(next.intervalSeconds))
+      ? Math.max(6, Math.min(60, Number(next.intervalSeconds)))
+      : Number(raw.intervalSeconds || DEFAULTS.intervalSeconds),
+    ollamaEnabled: typeof next.ollamaEnabled === 'boolean'
+      ? next.ollamaEnabled
+      : raw.ollamaEnabled !== false,
+    ollamaModel: typeof next.ollamaModel === 'string'
+      ? next.ollamaModel.trim()
+      : (raw.ollamaModel || '')
   };
 
   if (typeof next.apiKey === 'string' && next.apiKey.trim()) {
@@ -56,6 +77,13 @@ export function saveSettings(next = {}) {
       throw new Error('Secure OS key storage is not available on this computer. Set GEMINI_API_KEY in the environment instead.');
     }
     merged.apiKeyEncrypted = safeStorage.encryptString(next.apiKey.trim()).toString('base64');
+  }
+
+  if (typeof next.hfToken === 'string' && next.hfToken.trim()) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Secure OS key storage is not available on this computer. Set HF_TOKEN in the environment instead.');
+    }
+    merged.hfTokenEncrypted = safeStorage.encryptString(next.hfToken.trim()).toString('base64');
   }
 
   writeRaw(merged);
@@ -70,4 +98,15 @@ export function getApiKey() {
     throw new Error('Secure OS key storage is unavailable, so the saved Gemini key cannot be decrypted.');
   }
   return safeStorage.decryptString(Buffer.from(raw.apiKeyEncrypted, 'base64'));
+}
+
+
+export function getHfToken() {
+  if (process.env.HF_TOKEN?.trim()) return process.env.HF_TOKEN.trim();
+  const raw = readRaw();
+  if (!raw.hfTokenEncrypted) return '';
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('Secure OS key storage is unavailable, so the saved Hugging Face token cannot be decrypted.');
+  }
+  return safeStorage.decryptString(Buffer.from(raw.hfTokenEncrypted, 'base64'));
 }

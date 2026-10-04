@@ -130,7 +130,7 @@ function limitSpeechWords(text, maxWords) {
 function speakAdvice(text, kind = 'automatic') {
   if (!ui.audioEnabled.checked || !text?.trim() || !('speechSynthesis' in window)) return;
 
-  const maxWords = kind === 'direct' ? 28 : 14;
+  const maxWords = kind === 'direct' ? 28 : (kind === 'research' ? 18 : 12);
   const clean = limitSpeechWords(text.trim(), maxWords);
   const fingerprint = speechFingerprint(clean);
   const now = Date.now();
@@ -303,13 +303,11 @@ window.zoomComp.onEvent(({ type, payload }) => {
 
     case 'input-transcript':
       addTranscript(payload.text);
-      if (payload.source === 'YOU' && (speechActive || speechQueue.length)) {
-        clearSpeech();
-      }
       break;
 
     case 'user-speaking':
-      if (speechActive || speechQueue.length) clearSpeech();
+      // Keep coaching audio playing while the user talks. The local worker
+      // continues transcribing the microphone independently.
       break;
 
     case 'stale-advice':
@@ -393,7 +391,7 @@ ui.askForm.addEventListener('submit', async (event) => {
     ui.ollamaEnabled.checked = settings.ollamaEnabled !== false;
     ui.ollamaModel.value = settings.ollamaModel || '';
     ui.whisperModel.value = settings.whisperModel || 'small';
-    ui.intervalSeconds.value = String(settings.intervalSeconds || 8);
+    ui.intervalSeconds.value = String(settings.intervalSeconds || 4);
     ui.speechRate.value = String(settings.speechRate || 1.4);
 
     ui.apiKey.placeholder = settings.hasApiKey

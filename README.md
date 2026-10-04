@@ -1,206 +1,151 @@
 # Zoom Companion
 
-Zoom Companion now has two operating modes:
+Windows desktop meeting copilot with local transcription, Gemini text analysis, automatic Google Search grounding, and Ollama fallback.
 
-1. **Recommended: local transcription mode**. Windows microphone + system audio are transcribed locally with faster-whisper. Only rolling transcript text is sent to Gemini periodically for coaching.
-2. **Legacy: Gemini Live Electron mode**. The original Electron app streams audio to Gemini Live.
-
-The local mode is the preferred path because it uses dramatically less Gemini quota and keeps raw meeting audio on the PC.
-
-## Recommended local mode
-
-### What it does
-
-- Captures the default Windows microphone.
-- Captures the default Windows speaker/headphone output through WASAPI loopback.
-- Transcribes both locally with faster-whisper.
-- Tags transcript as `[YOU]` and `[MEETING]`.
-- Sends only a rolling text window to Gemini when new transcript exists.
-- Checks for useful coaching roughly every 12 seconds by default.
-- Uses normal Gemini text generation with Google Search grounding when the model needs current external information.
-- Keeps transcribing locally even if a Gemini text request temporarily hits a quota/rate limit.
-- Lets you type a private question into the console and sends it immediately with recent meeting context.
-- Does not write meeting audio or transcripts to disk.
-
-The default analysis model is `gemini-3.8-flash`. The default local transcription model is faster-whisper `small`.
-
-## Local-mode requirements
-
-- Windows 10/11.
-- Python 3.11+.
-- A Gemini API key.
-- Internet access for Gemini requests and for the first faster-whisper model download.
-- Permission/consent to process the meeting.
-
-## First-time setup
-
-From the repository:
-
-```bat
-setup-python.cmd
-```
-
-Or:
-
-```bat
-npm run setup:python
-```
-
-This creates a local `.venv` and installs:
-
-- faster-whisper
-- PyAudioWPatch for Windows WASAPI loopback
-- google-genai
-- numpy
-
-The first run also downloads the selected Whisper model if it is not already cached.
-
-## Add your private business context
-
-Copy:
+## Recommended architecture
 
 ```
-context.example.txt
-```
-
-to:
-
-```
-context.txt
-```
-
-Then paste your real business/interview context into `context.txt`.
-
-`context.txt` is intentionally git-ignored so your private context is not committed to the public repository.
-
-## Start local companion
-
-Double-click:
-
-```
-run-local-companion.cmd
-```
-
-Or:
-
-```bat
-npm run local
-```
-
-If `GEMINI_API_KEY` is not already set in the environment, the script securely prompts for it in the console.
-
-While it is running:
-
-- Live transcript lines appear continuously.
-- Useful advice appears as `COACH: ...`.
-- Routine conversation produces no Gemini-visible advice.
-- Type a private question and press Enter to ask Gemini using the recent meeting context.
-- Press Ctrl+C to stop.
-
-## Configuration
-
-The local launcher defaults to:
-
-```bat
-python\companion.py --standalone --mode sales --interval 12
-```
-
-Available modes:
-
-- `sales`
-- `interview`
-- `general`
-
-Useful environment variables:
-
-- `GEMINI_API_KEY`
-- `ZOOM_COMPANION_MODEL`, default `gemini-3.8-flash`
-- `ZOOM_COMPANION_WHISPER_MODEL`, default `small`
-- `ZOOM_COMPANION_INTERVAL`, default `12`
-- `ZOOM_COMPANION_CONTEXT_FILE`, default `context.txt`
-
-Example:
-
-```bat
-set ZOOM_COMPANION_WHISPER_MODEL=base
-set ZOOM_COMPANION_INTERVAL=10
-run-local-companion.cmd
-```
-
-Use `base` if the CPU cannot keep up with `small`. Use `small` for better multilingual accuracy when performance is sufficient.
-
-## How quota usage changes
-
-The local mode does not send continuous audio to Gemini Live.
-
-Instead:
-
-```
-microphone + system audio
+Windows mic + system audio
         ↓
 local faster-whisper
         ↓
-text transcript
+rolling transcript
         ↓
-rolling transcript window
+Gemini 3.8 Flash text analysis
         ↓
-Gemini text request every ~12 seconds when new speech exists
+Google Search automatically when useful
         ↓
-short coaching response or [SILENT]
+GUI coaching response
+        ↓
+Ollama fallback if Gemini fails
 ```
 
-The rolling transcript sent on each automatic analysis is capped to roughly 6,500 characters. Private typed questions can use up to roughly 9,000 characters of recent transcript.
+Raw meeting audio stays on the PC in the recommended mode. Gemini receives rolling transcript text and user/business context, not raw audio.
 
-## Local architecture
+## GUI
 
-- `python/companion.py`: Windows audio capture, resampling, local Whisper transcription, rolling transcript, Gemini text analysis, private questions.
-- `requirements-python.txt`: Python dependencies.
-- `setup-python.cmd`: creates the local virtual environment and installs dependencies.
-- `run-local-companion.cmd`: one-click local companion launcher.
-- `context.txt`: your private context, not committed.
-- `context.example.txt`: safe template.
-
-### Audio capture
-
-The script uses PyAudioWPatch/WASAPI:
-
-- default input device for your microphone
-- default WASAPI loopback device for what you hear through Windows
-
-The two streams are transcribed separately so the transcript can distinguish `YOU` from `MEETING`.
-
-## Legacy Electron / Gemini Live mode
-
-The original Electron application is still available:
+Run the Electron application:
 
 ```bat
 npm install
 npm start
 ```
 
-It includes:
+The GUI shows:
 
-- always-on-top UI
-- microphone + system-loopback capture
-- Gemini Live audio
-- typed private questions
-- live transcription
-- optional Gemini spoken responses
-- encrypted API-key storage through Electron `safeStorage`
+- Ready / setup / loading / listening / error state
+- Live local transcript
+- Current coaching response
+- Which provider answered, Gemini or Ollama
+- Sales, Interview, and General modes
+- Gemini API key
+- Hugging Face token
+- Whisper model
+- Analysis interval
+- Ollama fallback toggle and preferred model
+- Private typed questions
+- Always-on-top and compact modes
+- Optional Windows text-to-speech for coaching
 
-This mode consumes Gemini Live quota and is no longer the recommended default for long meetings.
+## Credentials
 
-## Build the Electron installer
+Gemini and Hugging Face credentials are saved through Electron `safeStorage`, which uses the operating system's secure credential protection when available.
+
+You normally enter each credential once and click **Save settings**.
+
+Environment variables can still override saved values:
+
+- `GEMINI_API_KEY`
+- `HF_TOKEN`
+
+The Hugging Face token is optional for public Whisper models, but the app can pass it to Hugging Face model downloads when supplied.
+
+## First start
+
+The GUI automatically:
+
+1. Finds Python on Windows.
+2. Creates a private Python environment under the app's user-data directory.
+3. Installs the packages from `requirements-python.txt` if needed.
+4. Loads/downloads the selected faster-whisper model.
+5. Opens the default microphone and Windows WASAPI loopback output.
+6. Starts local transcription.
+7. Sends rolling text to Gemini only when there is new transcript.
+
+The first Whisper model download may take longer than later starts.
+
+## Broad meeting assistance
+
+There are no fixed trigger phrases.
+
+The model is instructed to help when useful, including:
+
+- direct questions to the user
+- interview questions
+- technical questions
+- unfamiliar systems or terminology
+- feasibility and integration questions
+- objections
+- pricing and scope pressure
+- architecture/security concerns
+- potentially incorrect or current claims
+- decisions and risks
+- useful next questions
+
+Google Search is made available to Gemini on every analysis request. Gemini decides dynamically whether outside/current information is needed.
+
+## Gemini quota behavior
+
+Automatic analysis defaults to every 12 seconds and only runs when new transcript exists. Gemini 3.8 Flash uses low thinking for lower latency/cost.
+
+If Gemini returns a quota, rate, or service error, the companion backs Gemini off and continues using Ollama when enabled.
+
+## Ollama fallback
+
+Ollama defaults to:
+
+```
+http://127.0.0.1:11434
+```
+
+Leave **Preferred Ollama model** blank to auto-select the strongest suitable installed model.
+
+The selector prefers current high-capability families such as newer Qwen 3.x models and gpt-oss, then falls back to the largest suitable installed model it can find.
+
+The app does not automatically download a massive Ollama model. Install the model you want in Ollama first, or type an installed model name in the GUI.
+
+## Local transcription
+
+Python dependencies:
+
+- faster-whisper
+- PyAudioWPatch
+- google-genai
+- numpy
+
+PyAudioWPatch captures the default Windows WASAPI loopback device so the companion can hear Zoom, Meet, Teams, browser calls, and other meeting audio.
+
+The transcript is tagged:
+
+- `[YOU]` for microphone speech
+- `[MEETING]` for Windows system audio
+
+## Private questions
+
+Type a question into the GUI during the meeting and press **Ask**. The current rolling transcript is included automatically so the answer can use meeting context.
+
+## Windows installer
 
 ```bat
-npm install
 npm run dist
 ```
 
-The NSIS installer is created under `dist/`.
+The NSIS installer is generated under `dist/`.
+
+The packaged app includes the Python companion source and requirements. Python itself is not bundled, so Python 3.11+ must be installed on the machine.
 
 ## Privacy
 
-In local mode, raw meeting audio is processed by faster-whisper on the computer and is not intentionally written to disk. Gemini receives transcript text, the recent rolling transcript window, your configured context, and any private question you type.
+The recommended mode does not intentionally save meeting audio or transcripts to disk. Raw audio is processed locally by faster-whisper. Gemini receives transcript text, the configured context, and private questions.
 
-Review your organization's policies and applicable recording/AI-assistant rules before using the companion in a real meeting.
+Make sure meeting recording/AI-assistant use is permitted by the participants, organization, and applicable rules.

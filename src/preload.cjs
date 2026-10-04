@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('zoomComp', {
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   start: () => ipcRenderer.invoke('companion:start'),
   stop: () => ipcRenderer.invoke('companion:stop'),
+  pause: (paused) => ipcRenderer.invoke('companion:pause', paused),
+  setOutputSpeaking: (speaking) => ipcRenderer.invoke('companion:output-speaking', speaking),
   ask: (text) => ipcRenderer.invoke('companion:ask', text),
   sendAudio: (arrayBuffer) => ipcRenderer.send('companion:audio', arrayBuffer),
   endAudioStream: () => ipcRenderer.send('companion:audio-end'),

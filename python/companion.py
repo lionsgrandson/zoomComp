@@ -116,6 +116,7 @@ class CompanionService:
 
         self.stop_event = threading.Event()
         self.paused_event = threading.Event()
+        self.analysis_event = threading.Event()
         self.output_speaking_event = threading.Event()
         self.suppress_system_until = 0.0
         self.last_user_activity_emit = 0.0
@@ -408,6 +409,7 @@ class CompanionService:
             self.transcript.append((sequence, captured_at, source, text))
 
         emit("input-transcript", {"text": f"[{source}] {text}", "source": source})
+        self.analysis_event.set()
 
     def _snapshot(
         self,
@@ -440,13 +442,23 @@ class CompanionService:
         return latest_sequence, "\n".join(selected)
 
     def _analysis_loop(self) -> None:
-        while not self.stop_event.wait(0.5):
+        while not self.stop_event.is_set():
+            self.analysis_event.wait(timeout=0.5)
+            if self.stop_event.is_set():
+                return
             if self.paused_event.is_set():
+                self.analysis_event.clear()
+                continue
+
+            if not self.analysis_event.is_set():
                 continue
 
             now = time.monotonic()
-            if now - self.last_analysis_at < self.analysis_interval:
-                continue
+            since_last = now - self.last_analysis_at
+            if since_last < self.analysis_interval:
+                self.stop_event.wait(self.analysis_interval - since_last)
+                if self.stop_event.is_set() or self.paused_event.is_set():
+                    continue
 
             previous_sequence = self.last_analyzed_sequence
             latest_sequence, transcript = self._snapshot(
@@ -454,6 +466,7 @@ class CompanionService:
                 TRANSCRIPT_WINDOW_SECONDS,
             )
             if not transcript or latest_sequence <= previous_sequence:
+                self.analysis_event.clear()
                 continue
 
             if not self.analysis_slots.acquire(blocking=False):
@@ -467,8 +480,23 @@ class CompanionService:
                 ]
             new_transcript = "\n".join(new_rows)
 
-            self.last_analysis_at = now
+            self.last_analysis_at = time.monotonic()
             self.last_analyzed_sequence = latest_sequence
+
+            with self.transcript_lock:
+                newest_sequence = self.next_sequence - 1
+            if newest_sequence <= latest_sequence:
+                self.analysis_event.clear()
+
+            emit(
+                "trace",
+                {
+                    "message": (
+                        f"fast coach evaluating {len(new_rows)} new transcript segment"
+                        f"{'s' if len(new_rows) != 1 else ''}"
+                    )
+                },
+            )
 
             threading.Thread(
                 target=self._run_auto_request,

@@ -538,73 +538,69 @@ class CompanionService:
         if time.monotonic() < self.api_blocked_until:
             try:
                 text, ollama_model = self._request_ollama(prompt)
-                if not text or text.upper() == SILENT_MARKER:
-                    return
                 provider = f"Ollama · {ollama_model}"
                 emit(
                     "provider",
                     {"provider": "ollama", "model": ollama_model, "reason": "Gemini backoff active"},
                 )
-                emit("output-transcript", {"text": text, "provider": provider})
-                emit("generation-complete", {"provider": provider})
             except Exception as ollama_exc:
                 emit(
                     "error",
                     {"message": f"Gemini is backing off and Ollama fallback failed: {ollama_exc}"},
                 )
-            return
-
-        try:
-            config_args: dict[str, Any] = {
-                "system_instruction": self.system_prompt,
-                "thinking_config": types.ThinkingConfig(thinking_level="low"),
-                "max_output_tokens": 512,
-                "tools": [types.Tool(google_search=types.GoogleSearch())],
-            }
-
-            with self.api_lock:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**config_args),
-                )
-
-            self.api_backoff_seconds = 0.0
-            self.api_blocked_until = 0.0
-            text = clean_text(response.text or "")
-            provider = "Gemini"
-        except Exception as exc:
-            gemini_message = str(exc)
-            gemini_lower = gemini_message.lower()
-            if "429" in gemini_lower or "quota" in gemini_lower or "resource_exhausted" in gemini_lower:
-                self.api_backoff_seconds = min(
-                    300.0,
-                    max(30.0, self.api_backoff_seconds * 2.0),
-                )
-                self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
-
-            try:
-                text, ollama_model = self._request_ollama(prompt)
-                provider = f"Ollama · {ollama_model}"
-                emit(
-                    "provider",
-                    {
-                        "provider": "ollama",
-                        "model": ollama_model,
-                        "reason": gemini_message,
-                    },
-                )
-            except Exception as ollama_exc:
-                emit(
-                    "error",
-                    {
-                        "message": (
-                            f"Gemini failed: {gemini_message} "
-                            f"Ollama fallback also failed: {ollama_exc}"
-                        )
-                    },
-                )
                 return
+        else:
+                try:
+                config_args: dict[str, Any] = {
+                    "system_instruction": self.system_prompt,
+                    "thinking_config": types.ThinkingConfig(thinking_level="low"),
+                    "max_output_tokens": 160 if direct_question is None else 320,
+                    "tools": [types.Tool(google_search=types.GoogleSearch())],
+                }
+
+                with self.api_lock:
+                    response = self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(**config_args),
+                    )
+
+                self.api_backoff_seconds = 0.0
+                self.api_blocked_until = 0.0
+                text = clean_text(response.text or "")
+                provider = "Gemini"
+            except Exception as exc:
+                gemini_message = str(exc)
+                gemini_lower = gemini_message.lower()
+                if "429" in gemini_lower or "quota" in gemini_lower or "resource_exhausted" in gemini_lower:
+                    self.api_backoff_seconds = min(
+                        300.0,
+                        max(30.0, self.api_backoff_seconds * 2.0),
+                    )
+                    self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
+
+                try:
+                    text, ollama_model = self._request_ollama(prompt)
+                    provider = f"Ollama · {ollama_model}"
+                    emit(
+                        "provider",
+                        {
+                            "provider": "ollama",
+                            "model": ollama_model,
+                            "reason": gemini_message,
+                        },
+                    )
+                except Exception as ollama_exc:
+                    emit(
+                        "error",
+                        {
+                            "message": (
+                                f"Gemini failed: {gemini_message} "
+                                f"Ollama fallback also failed: {ollama_exc}"
+                            )
+                        },
+                    )
+                    return
 
         if not text or text.upper() == SILENT_MARKER:
             return
@@ -653,8 +649,21 @@ class CompanionService:
 
         self.last_advice_fingerprint = fingerprint
         self.last_advice_at = now
-        emit("output-transcript", {"text": text, "provider": provider})
-        emit("generation-complete", {"provider": provider})
+        emit(
+            "output-transcript",
+            {
+                "text": text,
+                "provider": provider,
+                "kind": "direct" if direct_question is not None else "automatic",
+            },
+        )
+        emit(
+            "generation-complete",
+            {
+                "provider": provider,
+                "kind": "direct" if direct_question is not None else "automatic",
+            },
+        )
 
     def set_paused(self, paused: bool) -> None:
         if paused:

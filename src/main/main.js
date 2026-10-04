@@ -75,6 +75,12 @@ function registerIpc() {
 
 
   ipcMain.handle('companion:ask', (_event, text) => ({ ok: Boolean(coach?.sendText(text)) }));
+  ipcMain.handle('companion:pause', (_event, paused) => ({
+    ok: Boolean(coach?.setPaused(Boolean(paused)))
+  }));
+  ipcMain.handle('companion:output-speaking', (_event, speaking) => ({
+    ok: Boolean(coach?.setOutputSpeaking(Boolean(speaking)))
+  }));
   ipcMain.handle('companion:stop', () => {
     coach?.stop();
     coach = null;

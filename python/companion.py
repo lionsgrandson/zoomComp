@@ -319,8 +319,6 @@ class CompanionService:
     def _analysis_loop(self) -> None:
         while not self.stop_event.wait(1.0):
             now = time.monotonic()
-            if now < self.api_blocked_until:
-                continue
             if now - self.last_analysis_at < self.analysis_interval:
                 continue
 
@@ -443,6 +441,25 @@ class CompanionService:
                 "Recent transcript:\n"
                 f"{transcript}"
             )
+
+        if time.monotonic() < self.api_blocked_until:
+            try:
+                text, ollama_model = self._request_ollama(prompt)
+                if not text or text.upper() == SILENT_MARKER:
+                    return
+                provider = f"Ollama · {ollama_model}"
+                emit(
+                    "provider",
+                    {"provider": "ollama", "model": ollama_model, "reason": "Gemini backoff active"},
+                )
+                emit("output-transcript", {"text": text, "provider": provider})
+                emit("generation-complete", {"provider": provider})
+            except Exception as ollama_exc:
+                emit(
+                    "error",
+                    {"message": f"Gemini is backing off and Ollama fallback failed: {ollama_exc}"},
+                )
+            return
 
         try:
             config_args: dict[str, Any] = {

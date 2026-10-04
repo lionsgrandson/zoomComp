@@ -96,7 +96,7 @@ Google Search is made available to Gemini on every analysis request. Gemini deci
 
 ## Gemini quota behavior
 
-Automatic analysis defaults to every 12 seconds and only runs when new transcript exists. Gemini 3.8 Flash uses low thinking for lower latency/cost.
+Automatic analysis defaults to every 4 seconds and only runs when new transcript exists. The fast path uses Gemini 3.5 Flash-Lite with minimal thinking and the last ~30 seconds of meeting context. External/current facts are escalated to Gemini 3.8 Flash with Google Search in the background.
 
 If Gemini returns a quota, rate, or service error, the companion backs Gemini off and continues using Ollama when enabled.
 

@@ -26,6 +26,8 @@ jobs:
           node --check src/preload.cjs
           node --check src/renderer/app.js
           node --check src/renderer/audio-worklet.js
+      - name: Python syntax check
+        run: python -m py_compile python/companion.py
       - name: Build Windows installer
         run: npm run dist
       - name: Upload Windows installer

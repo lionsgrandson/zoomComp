@@ -24,8 +24,10 @@ from google.genai import types
 TARGET_RATE = 16000
 READ_FRAMES = 1024
 TRANSCRIBE_CHUNK_SECONDS = 3.0
-TRANSCRIPT_WINDOW_CHARS = 6500
+TRANSCRIPT_WINDOW_CHARS = 2600
+TRANSCRIPT_WINDOW_SECONDS = 45
 ASK_WINDOW_CHARS = 9000
+AUTO_MAX_WORDS = 32
 SILENT_MARKER = "[SILENT]"
 HUMAN_OUTPUT = False
 
@@ -55,6 +57,13 @@ def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
 
 def clean_text(value: str) -> str:
     return " ".join((value or "").split()).strip()
+
+
+def limit_words(value: str, max_words: int) -> str:
+    words = clean_text(value).split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words]).rstrip(" ,;:-") + "…"
 
 
 def pcm16_to_float_mono(raw: bytes, channels: int, source_rate: int) -> np.ndarray:
@@ -317,7 +326,11 @@ class CompanionService:
 
         emit("input-transcript", {"text": f"[{source}] {text}", "source": source})
 
-    def _snapshot(self, max_chars: int) -> tuple[int, str]:
+    def _snapshot(
+        self,
+        max_chars: int,
+        max_age_seconds: float | None = None,
+    ) -> tuple[int, str]:
         with self.transcript_lock:
             rows = list(self.transcript)
 
@@ -325,6 +338,12 @@ class CompanionService:
             return 0, ""
 
         latest_sequence = rows[-1][0]
+        if max_age_seconds is not None:
+            cutoff = time.time() - max_age_seconds
+            rows = [row for row in rows if row[1] >= cutoff]
+            if not rows:
+                return latest_sequence, ""
+
         lines = [f"[{source}] {text}" for _seq, _ts, source, text in rows]
         selected: list[str] = []
         total = 0
@@ -346,7 +365,10 @@ class CompanionService:
                 continue
 
             previous_sequence = self.last_analyzed_sequence
-            latest_sequence, transcript = self._snapshot(TRANSCRIPT_WINDOW_CHARS)
+            latest_sequence, transcript = self._snapshot(
+                TRANSCRIPT_WINDOW_CHARS,
+                TRANSCRIPT_WINDOW_SECONDS,
+            )
             if not transcript or latest_sequence <= previous_sequence:
                 continue
 
@@ -364,6 +386,8 @@ class CompanionService:
                 transcript,
                 direct_question=None,
                 new_transcript=new_transcript,
+                request_sequence=latest_sequence,
+                request_started_at=time.monotonic(),
             )
 
     def _ollama_tags(self) -> list[dict[str, Any]]:
@@ -481,6 +505,8 @@ class CompanionService:
         transcript: str,
         direct_question: str | None,
         new_transcript: str | None = None,
+        request_sequence: int | None = None,
+        request_started_at: float | None = None,
     ) -> None:
         assert self.client is not None
 
@@ -490,13 +516,16 @@ class CompanionService:
                 f"{direct_question}\n\n"
                 "Recent meeting transcript:\n"
                 f"{transcript}\n\n"
-                "Answer the user's private question directly. Keep the answer concise and immediately usable."
+                "Answer the user's private question directly. Keep it concise and immediately usable. "
+                "Prefer one short answer, then one optional next point."
             )
         else:
             prompt = (
                 "Decide whether the NEWEST meeting speech creates a useful reason to coach the user right now. "
                 f"If not, output exactly {SILENT_MARKER}. "
-                "Do not repeat advice already implied by older context. "
+                "Only react to the newest speech. Older context is for disambiguation only and must never become "
+                "the reason for an intervention. Do not repeat advice already implied by older context. "
+                "Automatic coaching must be extremely short: one sentence if possible, maximum 25 words. "
                 "Never comment on transcript speed, transcript delay, silence, audio quality, context windows, "
                 "or the operation of the meeting assistant. If the newest speech is too incomplete or unclear, "
                 f"output exactly {SILENT_MARKER}.\n\n"
@@ -579,6 +608,37 @@ class CompanionService:
 
         if not text or text.upper() == SILENT_MARKER:
             return
+
+        if direct_question is None:
+            text = limit_words(text, AUTO_MAX_WORDS)
+
+            elapsed = (
+                time.monotonic() - request_started_at
+                if request_started_at is not None
+                else 0.0
+            )
+            with self.transcript_lock:
+                current_sequence = self.next_sequence - 1
+
+            transcript_advanced = (
+                request_sequence is not None
+                and current_sequence > request_sequence
+            )
+            advanced_by = (
+                current_sequence - request_sequence
+                if request_sequence is not None
+                else 0
+            )
+
+            if advanced_by >= 2 or (elapsed >= 6.0 and transcript_advanced):
+                emit(
+                    "stale-advice",
+                    {
+                        "reason": "Conversation moved on before the coaching answer returned.",
+                        "elapsedSeconds": round(elapsed, 1),
+                    },
+                )
+                return
 
         fingerprint = " ".join(
             "".join(ch.lower() if ch.isalnum() else " " for ch in text).split()

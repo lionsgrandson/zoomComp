@@ -415,8 +415,29 @@ class CompanionService:
         text = clean_text(
             str(((payload.get("message") or {}).get("content")) or "")
         )
+
         if not text:
-            raise RuntimeError(f"Ollama model {model} returned no text.")
+            generate_body = json.dumps(
+                {
+                    "model": model,
+                    "stream": False,
+                    "think": False,
+                    "prompt": self.system_prompt + "\n\n" + prompt,
+                    "options": {"temperature": 0.2},
+                }
+            ).encode("utf-8")
+            generate_request = urllib.request.Request(
+                self.ollama_url + "/api/generate",
+                data=generate_body,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(generate_request, timeout=90) as response:
+                generated = json.loads(response.read().decode("utf-8"))
+            text = clean_text(str(generated.get("response") or ""))
+
+        if not text:
+            raise RuntimeError(f"Ollama model {model} returned no direct answer.")
         return text, model
 
     def _request_advice(
@@ -466,7 +487,7 @@ class CompanionService:
             config_args: dict[str, Any] = {
                 "system_instruction": self.system_prompt,
                 "thinking_config": types.ThinkingConfig(thinking_level="low"),
-                "max_output_tokens": 220,
+                "max_output_tokens": 512,
                 "tools": [types.Tool(google_search=types.GoogleSearch())],
             }
 

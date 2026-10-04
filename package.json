@@ -1,7 +1,7 @@
 {
   "name": "zoom-companion",
-  "version": "0.1.2",
-  "description": "Private real-time Gemini meeting copilot for sales, interviews and general meetings.",
+  "version": "0.2.0",
+  "description": "Private local-transcription meeting copilot with Gemini and Ollama fallback.",
   "type": "module",
   "main": "src/main/main.js",
   "author": "Moshe Schwartzberg",
@@ -44,7 +44,24 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    }
+    },
+    "extraResources": [
+      {
+        "from": "python",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "requirements-python.txt",
+        "to": "requirements-python.txt"
+      },
+      {
+        "from": "context.example.txt",
+        "to": "context.example.txt"
+      }
+    ]
   },
   "engines": {
     "node": ">=22"

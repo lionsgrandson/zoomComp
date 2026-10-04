@@ -26,6 +26,11 @@ TRANSCRIPT_WINDOW_CHARS = 6500
 ASK_WINDOW_CHARS = 9000
 SILENT_MARKER = "[SILENT]"
 HUMAN_OUTPUT = False
+SEARCH_HINTS = (
+    "have you heard", "heard of", "do you know", "what is ", "which system",
+    "integrate with", "integration with", "competitor", "current price",
+    "מכיר", "שמעת", "מה זה", "איזו מערכת", "אינטגרציה", "מתחרה"
+)
 
 
 def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
@@ -98,6 +103,8 @@ class CompanionService:
         self.next_sequence = 1
         self.last_analyzed_sequence = 0
         self.last_analysis_at = 0.0
+        self.api_blocked_until = 0.0
+        self.api_backoff_seconds = 0.0
 
         self.api_lock = threading.Lock()
         self.pa: pyaudio.PyAudio | None = None
@@ -312,6 +319,8 @@ class CompanionService:
     def _analysis_loop(self) -> None:
         while not self.stop_event.wait(1.0):
             now = time.monotonic()
+            if now < self.api_blocked_until:
+                continue
             if now - self.last_analysis_at < self.analysis_interval:
                 continue
 
@@ -321,9 +330,22 @@ class CompanionService:
 
             self.last_analysis_at = now
             self.last_analyzed_sequence = latest_sequence
-            self._request_advice(transcript, direct_question=None)
+            self._request_advice(
+                transcript,
+                direct_question=None,
+                use_search=self._should_search(transcript),
+            )
 
-    def _request_advice(self, transcript: str, direct_question: str | None) -> None:
+    def _should_search(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(hint in lowered for hint in SEARCH_HINTS)
+
+    def _request_advice(
+        self,
+        transcript: str,
+        direct_question: str | None,
+        use_search: bool = False,
+    ) -> None:
         assert self.client is not None
 
         if direct_question:
@@ -344,17 +366,22 @@ class CompanionService:
             )
 
         try:
+            config_args: dict[str, Any] = {
+                "system_instruction": self.system_prompt,
+                "thinking_config": types.ThinkingConfig(thinking_level="low"),
+                "max_output_tokens": 220,
+            }
+            if use_search:
+                config_args["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+
             with self.api_lock:
                 response = self.client.models.generate_content(
                     model=self.model_name,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.system_prompt,
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        temperature=0.2,
-                        max_output_tokens=220,
-                    ),
+                    config=types.GenerateContentConfig(**config_args),
                 )
+            self.api_backoff_seconds = 0.0
+            self.api_blocked_until = 0.0
             text = clean_text(response.text or "")
             if not text or text.upper() == SILENT_MARKER:
                 return
@@ -364,12 +391,17 @@ class CompanionService:
             message = str(exc)
             lower = message.lower()
             if "429" in lower or "quota" in lower or "resource_exhausted" in lower:
+                self.api_backoff_seconds = min(
+                    300.0,
+                    max(30.0, self.api_backoff_seconds * 2.0),
+                )
+                self.api_blocked_until = time.monotonic() + self.api_backoff_seconds
                 emit(
                     "error",
                     {
                         "message": (
-                            "Gemini text quota/rate limit reached. Local transcription is still running; "
-                            "analysis will retry after more transcript arrives. "
+                            f"Gemini text quota/rate limit reached. Local transcription keeps running. "
+                            f"Automatic analysis is backing off for {int(self.api_backoff_seconds)} seconds. "
                             + message
                         )
                     },
@@ -382,9 +414,12 @@ class CompanionService:
         if not question:
             return
         _sequence, transcript = self._snapshot(ASK_WINDOW_CHARS)
+        use_search = question.lower().startswith("/search ")
+        if use_search:
+            question = question[8:].strip()
         threading.Thread(
             target=self._request_advice,
-            args=(transcript, question),
+            args=(transcript, question, use_search),
             name="private-question",
             daemon=True,
         ).start()

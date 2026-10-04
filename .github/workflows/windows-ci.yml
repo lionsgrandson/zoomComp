@@ -21,6 +21,7 @@ jobs:
         run: |
           node --check src/main/main.js
           node --check src/main/gemini.js
+          node --check src/main/local-coach.js
           node --check src/main/settings.js
           node --check src/main/prompts.js
           node --check src/preload.cjs

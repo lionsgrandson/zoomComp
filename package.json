@@ -1,6 +1,6 @@
 {
   "name": "zoom-companion",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Private real-time Gemini meeting copilot for sales, interviews and general meetings.",
   "type": "module",
   "main": "src/main/main.js",

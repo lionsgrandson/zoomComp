@@ -37,9 +37,8 @@ export class GeminiCoach {
       const config = {
         responseModalities: [Modality.AUDIO],
         systemInstruction: buildSystemPrompt(this.options.mode, this.options.context),
-        inputAudioTranscription: { mode: 'SMART', languageCodes: [] },
+        inputAudioTranscription: {},
         outputAudioTranscription: {},
-        proactivity: { proactiveAudio: true },
         contextWindowCompression: { slidingWindow: {} },
         sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
         tools: [{ googleSearch: {} }],

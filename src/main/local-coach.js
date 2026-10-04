@@ -109,7 +109,7 @@ export class LocalCoach {
     });
 
     const ready = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Local transcription did not start in time.')), 120000);
+      const timeout = setTimeout(() => reject(new Error('Local transcription did not start in time.')), 600000);
       const onReady = (payload) => {
         if (payload?.state !== 'connected') return;
         clearTimeout(timeout);
@@ -126,6 +126,13 @@ export class LocalCoach {
         if (!this.connected) {
           clearTimeout(timeout);
           reject(new Error(`Local transcription exited with code ${code ?? 'unknown'}.`));
+          return;
+        }
+        this.connected = false;
+        if (code && code !== 0) {
+          this.emit('error', { message: `Local transcription stopped unexpectedly with code ${code}.` });
+        } else {
+          this.emit('status', { state: 'stopped', reason: 'Local transcription ended.' });
         }
       });
     });

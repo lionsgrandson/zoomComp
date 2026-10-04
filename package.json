@@ -9,8 +9,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "pack": "electron-builder --dir --win x64",
-    "dist": "electron-builder --win nsis --x64"
+    "pack": "electron-builder --dir --win --x64 --publish never",
+    "dist": "electron-builder --win nsis --x64 --publish never"
   },
   "dependencies": {
     "@google/genai": "2.24.0"

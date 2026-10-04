@@ -28,6 +28,10 @@ jobs:
           node --check src/renderer/audio-worklet.js
       - name: Python syntax check
         run: python -m py_compile python/companion.py
+      - name: Validate local transcription dependencies
+        run: |
+          python -m pip install -r requirements-python.txt
+          python -c "import numpy, pyaudiowpatch, faster_whisper; from google import genai; print('Python companion dependencies OK')"
       - name: Build Windows installer
         run: npm run dist
       - name: Upload Windows installer

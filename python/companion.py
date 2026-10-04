@@ -8,6 +8,8 @@ import queue
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -26,11 +28,6 @@ TRANSCRIPT_WINDOW_CHARS = 6500
 ASK_WINDOW_CHARS = 9000
 SILENT_MARKER = "[SILENT]"
 HUMAN_OUTPUT = False
-SEARCH_HINTS = (
-    "have you heard", "heard of", "do you know", "what is ", "which system",
-    "integrate with", "integration with", "competitor", "current price",
-    "מכיר", "שמעת", "מה זה", "איזו מערכת", "אינטגרציה", "מתחרה"
-)
 
 
 def emit(event_type: str, payload: dict[str, Any] | None = None) -> None:
@@ -95,6 +92,9 @@ class CompanionService:
         self.whisper_model_name = str(config.get("whisperModel") or "small").strip()
         self.system_prompt = str(config.get("systemPrompt") or "").strip()
         self.analysis_interval = max(6.0, float(config.get("intervalSeconds") or 12))
+        self.ollama_enabled = bool(config.get("ollamaEnabled", True))
+        self.ollama_model = str(config.get("ollamaModel") or "").strip()
+        self.ollama_url = str(config.get("ollamaUrl") or "http://127.0.0.1:11434").rstrip("/")
 
         self.stop_event = threading.Event()
         self.audio_queue: queue.Queue[AudioChunk] = queue.Queue(maxsize=12)
@@ -330,21 +330,12 @@ class CompanionService:
 
             self.last_analysis_at = now
             self.last_analyzed_sequence = latest_sequence
-            self._request_advice(
-                transcript,
-                direct_question=None,
-                use_search=self._should_search(transcript),
-            )
-
-    def _should_search(self, text: str) -> bool:
-        lowered = text.lower()
-        return any(hint in lowered for hint in SEARCH_HINTS)
+            self._request_advice(transcript, direct_question=None)
 
     def _request_advice(
         self,
         transcript: str,
         direct_question: str | None,
-        use_search: bool = False,
     ) -> None:
         assert self.client is not None
 
@@ -371,8 +362,7 @@ class CompanionService:
                 "thinking_config": types.ThinkingConfig(thinking_level="low"),
                 "max_output_tokens": 220,
             }
-            if use_search:
-                config_args["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+            config_args["tools"] = [types.Tool(google_search=types.GoogleSearch())]
 
             with self.api_lock:
                 response = self.client.models.generate_content(
@@ -414,12 +404,9 @@ class CompanionService:
         if not question:
             return
         _sequence, transcript = self._snapshot(ASK_WINDOW_CHARS)
-        use_search = question.lower().startswith("/search ")
-        if use_search:
-            question = question[8:].strip()
         threading.Thread(
             target=self._request_advice,
-            args=(transcript, question, use_search),
+            args=(transcript, question),
             name="private-question",
             daemon=True,
         ).start()

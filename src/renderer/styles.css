@@ -35,6 +35,9 @@ textarea { resize: vertical; min-height: 92px; }
 .check { display: flex; grid-template-columns: none; align-items: flex-start; gap: 8px; }
 .check input { width: auto; margin-top: 2px; accent-color: #6d88ff; }
 button { border: 0; border-radius: 10px; padding: 10px 13px; font-weight: 700; }
+.run-controls { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.run-controls .primary { width: 100%; }
+.run-controls .secondary { min-width: 96px; }
 .primary { width: 100%; min-height: 48px; color: white; background: linear-gradient(135deg, #476dff, #6b51f5); box-shadow: 0 10px 22px #4b67ff2e; }
 .primary.danger { background: linear-gradient(135deg, #d7445d, #a92f47); }
 .secondary { color: #dce5ff; background: #243359; }
@@ -55,3 +58,5 @@ body.compact h1 { font-size: 18px; }
 body.compact .coach-card { padding: 10px 12px; }
 body.compact .advice { min-height: 48px; max-height: 70px; overflow: auto; font-size: 14px; margin-top: 6px; }
 body.compact .primary { min-height: 34px; padding: 7px 10px; }
+body.compact .run-controls { grid-template-columns: 1fr auto; }
+body.compact .run-controls .secondary { min-width: 72px; padding: 7px 9px; }

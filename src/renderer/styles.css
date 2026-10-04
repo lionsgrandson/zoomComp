@@ -60,3 +60,31 @@ body.compact .advice { min-height: 48px; max-height: 70px; overflow: auto; font-
 body.compact .primary { min-height: 34px; padding: 7px 10px; }
 body.compact .run-controls { grid-template-columns: 1fr auto; }
 body.compact .run-controls .secondary { min-width: 72px; padding: 7px 9px; }
+
+
+.trace-panel {
+  border: 1px solid #24304d;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #0f1628;
+}
+
+.trace-panel summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  color: #c8d2f0;
+}
+
+.trace-panel .transcript {
+  margin-top: 10px;
+  max-height: 120px;
+  min-height: 56px;
+  font-size: 11px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

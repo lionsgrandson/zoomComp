@@ -1,8 +1,9 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, session } from 'electron';
-import { GeminiCoach } from './gemini.js';
-import { getApiKey, getPublicSettings, saveSettings } from './settings.js';
+import { app, BrowserWindow, globalShortcut, ipcMain } from 'electron';
+import { LocalCoach } from './local-coach.js';
+import { buildSystemPrompt } from './prompts.js';
+import { getApiKey, getHfToken, getPublicSettings, saveSettings } from './settings.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,28 +45,6 @@ function createWindow() {
   });
 }
 
-function configureMediaCapture() {
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permission === 'media');
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(permission === 'media');
-  });
-
-  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
-    try {
-      const sources = await desktopCapturer.getSources({
-        types: ['screen'],
-        thumbnailSize: { width: 0, height: 0 },
-        fetchWindowIcons: false
-      });
-      if (!sources.length) return callback({});
-      callback({ video: sources[0], audio: 'loopback' });
-    } catch (error) {
-      console.error('Display capture failed:', error);
-      callback({});
-    }
-  });
-}
-
 function registerIpc() {
   ipcMain.handle('settings:get', () => getPublicSettings());
   ipcMain.handle('settings:save', (_event, value) => {
@@ -80,23 +59,20 @@ function registerIpc() {
     if (!apiKey) throw new Error('Add a Gemini API key first.');
 
     coach?.stop();
-    coach = new GeminiCoach(emitToRenderer);
+    coach = new LocalCoach(emitToRenderer);
     await coach.connect({
       apiKey,
-      mode: settings.mode,
-      context: settings.context,
-      model: settings.model
+      hfToken: getHfToken(),
+      model: settings.model,
+      whisperModel: settings.whisperModel,
+      intervalSeconds: settings.intervalSeconds,
+      ollamaEnabled: settings.ollamaEnabled,
+      ollamaModel: settings.ollamaModel,
+      systemPrompt: buildSystemPrompt(settings.mode, settings.context)
     });
     return { ok: true };
   });
 
-  ipcMain.on('companion:audio', (_event, arrayBuffer) => {
-    coach?.sendAudio(arrayBuffer);
-  });
-
-  ipcMain.on('companion:audio-end', () => {
-    coach?.endAudioStream();
-  });
 
   ipcMain.handle('companion:ask', (_event, text) => ({ ok: Boolean(coach?.sendText(text)) }));
   ipcMain.handle('companion:stop', () => {
@@ -124,7 +100,6 @@ function registerIpc() {
 }
 
 app.whenReady().then(() => {
-  configureMediaCapture();
   registerIpc();
   createWindow();
 

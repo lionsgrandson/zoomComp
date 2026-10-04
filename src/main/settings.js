@@ -9,7 +9,7 @@ const DEFAULTS = {
   alwaysOnTop: true,
   model: 'gemini-3.8-flash',
   whisperModel: 'small',
-  intervalSeconds: 12,
+  intervalSeconds: 8,
   ollamaEnabled: true,
   ollamaModel: '',
   speechRate: 1.4
@@ -19,6 +19,12 @@ function normalizeModel(value) {
   const model = typeof value === 'string' ? value.trim() : '';
   if (!model || model.includes('-live')) return DEFAULTS.model;
   return model;
+}
+
+function normalizedInterval(raw) {
+  const current = Number(raw.intervalSeconds || DEFAULTS.intervalSeconds);
+  if (!raw.realtimeProfileVersion && current === 12) return 8;
+  return Math.max(6, Math.min(60, current));
 }
 
 function filePath() {
@@ -48,7 +54,7 @@ export function getPublicSettings() {
     alwaysOnTop: raw.alwaysOnTop !== false,
     model: normalizeModel(raw.model),
     whisperModel: raw.whisperModel || DEFAULTS.whisperModel,
-    intervalSeconds: Number(raw.intervalSeconds || DEFAULTS.intervalSeconds),
+    intervalSeconds: normalizedInterval(raw),
     ollamaEnabled: raw.ollamaEnabled !== false,
     ollamaModel: typeof raw.ollamaModel === 'string' ? raw.ollamaModel : '',
     speechRate: Number(raw.speechRate || DEFAULTS.speechRate),
@@ -82,7 +88,8 @@ export function saveSettings(next = {}) {
       : (raw.ollamaModel || ''),
     speechRate: Number.isFinite(Number(next.speechRate))
       ? Math.max(0.8, Math.min(2.0, Number(next.speechRate)))
-      : Number(raw.speechRate || DEFAULTS.speechRate)
+      : Number(raw.speechRate || DEFAULTS.speechRate),
+    realtimeProfileVersion: 1
   };
 
   if (typeof next.apiKey === 'string' && next.apiKey.trim()) {

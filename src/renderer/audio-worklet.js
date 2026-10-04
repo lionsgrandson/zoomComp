@@ -5,6 +5,7 @@ class MeetingPcmProcessor extends AudioWorkletProcessor {
     this.chunkSamples = 640; // 40 ms at 16 kHz.
     this.output = new Int16Array(this.chunkSamples);
     this.outputIndex = 0;
+    this.sumSquares = 0;
     this.sourcePosition = 0;
     this.totalInputSamples = 0;
     this.ratio = sampleRate / this.targetRate;
@@ -12,12 +13,16 @@ class MeetingPcmProcessor extends AudioWorkletProcessor {
 
   pushSample(value) {
     const clamped = Math.max(-1, Math.min(1, value));
+    this.sumSquares += clamped * clamped;
     this.output[this.outputIndex++] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+
     if (this.outputIndex === this.output.length) {
       const payload = this.output.buffer;
-      this.port.postMessage(payload, [payload]);
+      const rms = Math.sqrt(this.sumSquares / this.chunkSamples);
+      this.port.postMessage({ audio: payload, rms }, [payload]);
       this.output = new Int16Array(this.chunkSamples);
       this.outputIndex = 0;
+      this.sumSquares = 0;
     }
   }
 

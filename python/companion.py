@@ -108,9 +108,9 @@ class CompanionService:
         self.auto_model_name = str(
             config.get("autoModel") or "gemini-3.5-flash-lite"
         ).strip()
-        self.whisper_model_name = str(config.get("whisperModel") or "small").strip()
+        self.whisper_model_name = str(config.get("whisperModel") or "base").strip()
         self.system_prompt = str(config.get("systemPrompt") or "").strip()
-        self.analysis_interval = max(3.0, float(config.get("intervalSeconds") or 4))
+        self.analysis_interval = max(1.5, float(config.get("intervalSeconds") or 2))
         self.ollama_enabled = bool(config.get("ollamaEnabled", True))
         self.ollama_model = str(config.get("ollamaModel") or "").strip()
         self.ollama_url = str(config.get("ollamaUrl") or "http://127.0.0.1:11434").rstrip("/")
@@ -1045,8 +1045,8 @@ def standalone_main() -> int:
     parser = argparse.ArgumentParser(description="Local Whisper + Gemini text meeting companion")
     parser.add_argument("--mode", choices=["sales", "interview", "general"], default="sales")
     parser.add_argument("--model", default=os.environ.get("ZOOM_COMPANION_MODEL", "gemini-3.8-flash"))
-    parser.add_argument("--whisper-model", default=os.environ.get("ZOOM_COMPANION_WHISPER_MODEL", "small"))
-    parser.add_argument("--interval", type=float, default=float(os.environ.get("ZOOM_COMPANION_INTERVAL", "4")))
+    parser.add_argument("--whisper-model", default=os.environ.get("ZOOM_COMPANION_WHISPER_MODEL", "base"))
+    parser.add_argument("--interval", type=float, default=float(os.environ.get("ZOOM_COMPANION_INTERVAL", "2")))
     parser.add_argument("--context-file", default=os.environ.get("ZOOM_COMPANION_CONTEXT_FILE", "context.txt"))
     args = parser.parse_args()
 

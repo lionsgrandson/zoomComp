@@ -780,6 +780,7 @@ class CompanionService:
             f"RECENT MEETING CONTEXT:\n{transcript}"
         )
 
+        emit("trace", {"message": f"verification started: {search_query}"})
         try:
             response = self.client.models.generate_content(
                 model=self.model_name,
@@ -791,6 +792,7 @@ class CompanionService:
                     tools=[types.Tool(google_search=types.GoogleSearch())],
                 ),
             )
+            emit("trace", {"message": "verification completed with Gemini Search"})
             self._emit_advice(
                 response.text or "",
                 "Gemini · verified",
@@ -928,6 +930,7 @@ class CompanionService:
                     return
 
         if not text or text.upper() == SILENT_MARKER:
+            emit("trace", {"message": "fast coach chose silence"})
             return
 
         if text.upper().startswith("[SEARCH]"):

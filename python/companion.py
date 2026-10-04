@@ -29,7 +29,7 @@ TRANSCRIPT_WINDOW_CHARS = 1800
 TRANSCRIPT_WINDOW_SECONDS = 30
 ASK_WINDOW_CHARS = 9000
 AUTO_MAX_WORDS = 18
-DIRECT_MAX_WORDS = 42
+DIRECT_MAX_WORDS = 32
 SPEECH_START_RMS = 0.008
 SPEECH_END_RMS = 0.0045
 SPEECH_END_SILENCE_SECONDS = 0.35
@@ -822,6 +822,7 @@ class CompanionService:
         new_transcript: str | None = None,
         request_sequence: int | None = None,
         request_started_at: float | None = None,
+        detailed: bool = False,
     ) -> None:
         assert self.client is not None
 
@@ -830,9 +831,13 @@ class CompanionService:
                 "The user privately asked this during an ongoing meeting:\n"
                 f"{direct_question}\n\n"
                 "Use the recent meeting context below. Give only the answer the user needs right now. "
-                "Maximum 42 words unless the user explicitly asks for detail. "
-                "No headings, no bullets, no recap, no rationale section, no 'why this works'. "
-                "If external/current verification matters, use Google Search.\n\n"
+                + (
+                    "The user explicitly requested detail, so a fuller answer is allowed. "
+                    if detailed
+                    else
+                    "Maximum 32 words. No headings, no bullets, no recap, no rationale section, no 'why this works'. "
+                )
+                + "If external/current verification matters, use Google Search.\n\n"
                 f"RECENT CONTEXT:\n{transcript}"
             )
             try:
@@ -842,21 +847,22 @@ class CompanionService:
                     config=types.GenerateContentConfig(
                         system_instruction=self.system_prompt,
                         thinking_config=types.ThinkingConfig(thinking_level="low"),
-                        max_output_tokens=140,
+                        max_output_tokens=360 if detailed else 110,
                         tools=[types.Tool(google_search=types.GoogleSearch())],
                     ),
                 )
-                self._emit_advice(
-                    limit_words(response.text or "", DIRECT_MAX_WORDS),
-                    "Gemini",
-                    "direct",
-                )
+                direct_text = clean_text(response.text or "")
+                if not detailed:
+                    direct_text = limit_words(direct_text, DIRECT_MAX_WORDS)
+                self._emit_advice(direct_text, "Gemini", "direct")
                 return
             except Exception as exc:
                 try:
                     text, ollama_model = self._request_ollama(prompt)
+                    if not detailed:
+                        text = limit_words(text, DIRECT_MAX_WORDS)
                     self._emit_advice(
-                        limit_words(text, DIRECT_MAX_WORDS),
+                        text,
                         f"Ollama · {ollama_model}",
                         "direct",
                     )
@@ -975,10 +981,15 @@ class CompanionService:
         question = clean_text(text)
         if not question:
             return
+
+        detailed = question.lower().startswith("/detail ")
+        if detailed:
+            question = question[8:].strip()
+
         _sequence, transcript = self._snapshot(ASK_WINDOW_CHARS)
         threading.Thread(
             target=self._request_advice,
-            args=(transcript, question),
+            args=(transcript, question, None, None, None, detailed),
             name="private-question",
             daemon=True,
         ).start()

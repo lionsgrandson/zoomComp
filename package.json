@@ -10,7 +10,9 @@
     "start": "electron .",
     "dev": "electron .",
     "pack": "electron-builder --dir --win --x64 --publish never",
-    "dist": "electron-builder --win nsis --x64 --publish never"
+    "dist": "electron-builder --win nsis --x64 --publish never",
+    "setup:python": "python -m venv .venv && .venv\\\\Scripts\\\\python.exe -m pip install --upgrade pip && .venv\\\\Scripts\\\\python.exe -m pip install -r requirements-python.txt",
+    "local": ".venv\\\\Scripts\\\\python.exe python\\\\companion.py --standalone --mode sales --interval 12"
   },
   "dependencies": {
     "@google/genai": "2.24.0"
@@ -31,7 +33,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
